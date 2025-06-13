@@ -1,0 +1,18 @@
+[project]
+name = "afs"
+version = "0.1.0"
+description = "Augmented Flow Sampler"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "blackjax>=1.2.5",
+    "distrax>=0.1.5",
+    "equinox>=0.12.2",
+    "jax>=0.6.1",
+    "jaxtyping>=0.3.2",
+    "matplotlib>=3.10.3",
+    "optax>=0.2.4",
+]
+
+[tool.ruff]
+ignore = ["E731", "F821", "F722"]
