@@ -38,12 +38,11 @@ def epsilon(
     dt_log_density = dt_log_density_unormalised - dt_logZt
 
     lhs = div_v_r + jnp.sum(v_r * score_r)
-    G = jnp.sum(v_x * score_x) - dt_log_density
+    G = -jnp.sum(v_x * score_x) - dt_log_density
 
     result = lhs - G
 
-    return jnp.nan_to_num(result, posinf=1.0, neginf=-1.0)
-
+    return result, G
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 
@@ -53,9 +52,10 @@ def loss_fn(
     time_derivative_log_density: Callable[[Float[Array, "dim"], float], float],
     score_fn: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
     r_dim: int,
+    soft_constraint: bool = False,
 ) -> Tuple[float, Float[Array, "batch"]]:
 
-    raw_epsilons = batched_epsilon(
+    raw_epsilons, Gs = batched_epsilon(
         v_theta,
         particles,
         score_fn,
@@ -64,4 +64,8 @@ def loss_fn(
     )
 
     _loss = jnp.mean(raw_epsilons**2)
+
+    if soft_constraint:
+        _loss = _loss + jnp.mean(Gs**2)
+
     return _loss, raw_epsilons

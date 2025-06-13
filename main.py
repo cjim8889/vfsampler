@@ -16,8 +16,8 @@ from pkg.training.dt_logZt import estimate_dt_logZt
 from pkg.training.objective import Particle, loss_fn
 from pkg.ode.integration import generate_samples
 
-key = jax.random.PRNGKey(0)
-batch_size = 32
+key = jax.random.PRNGKey(555)
+batch_size = 128
 augmented_dim = 2
 ts = jnp.linspace(0, 1, 64)
 
@@ -82,7 +82,7 @@ dt_logZt = estimate_dt_logZt(
     xs=xrs,
     weights=smc_samples["weights"],
     ts=ts,
-    time_derivative_log_density=annealed_distribution.time_dependent_log_prob,
+    time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
 )
 
 particles = Particle(
@@ -91,14 +91,14 @@ particles = Particle(
     dt_logZt=jnp.repeat(dt_logZt, xrs.shape[1]),
 )
 
-loss, _ = loss_fn(
+loss, raw_epsilons = loss_fn(
     v_theta=v_theta,
     particles=particles,
     time_derivative_log_density=annealed_distribution.time_dependent_log_prob,
     score_fn=annealed_distribution.score_fn,
     r_dim=augmented_dim,
 )
-
+print(raw_epsilons)
 print(f"Initial loss: {loss}")
 
 # ================== TRAINING BOILERPLATE ==================
@@ -134,7 +134,7 @@ def generate_training_data(key, batch_size, initial_distribution, augmented_dist
         xs=xrs,
         weights=weights,
         ts=ts,
-        time_derivative_log_density=annealed_distribution.time_dependent_log_prob,
+        time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
     )
     
     # Return all particles (flattened across time and trajectory dimensions)
@@ -177,6 +177,7 @@ def training_step(v_theta, opt_state, optimizer, time_derivative_log_density, sc
             time_derivative_log_density=time_derivative_log_density,
             score_fn=score_fn,
             r_dim=r_dim,
+            soft_constraint=False,
         )
         return loss
     
@@ -229,13 +230,10 @@ def visualize_generated_samples(v_theta, key, target_distribution, initial_distr
     print(f"          | Saved visualization to {plot_path}")
 
 # Training configuration
-learning_rate = 1e-4
+learning_rate = 1e-3
 num_epochs = 1000
 data_refresh_interval = 10  # Regenerate data every N epochs
 log_interval = 50
-warmup_epochs = 50  # Use smaller learning rate for first N epochs
-use_gradient_clipping = True
-max_grad_norm = 1.0
 
 # Dataset configuration
 dataset_size = 2560  # Generate more particles for the dataset
@@ -266,24 +264,36 @@ for epoch in range(num_epochs):
         )
         if epoch > 0:
             print(f"Epoch {epoch}: Generated fresh training dataset ({full_dataset.xr.shape[0]} particles)")
-    
-    # Sample a batch from the full dataset for this training step
-    key, batch_key = jax.random.split(key)
-    batch_particles = sample_batch_from_data(batch_key, full_dataset, training_batch_size)
-    
-    # Training step
-    v_theta, opt_state, current_loss = training_step(
-        v_theta, opt_state, optimizer,
-        annealed_distribution.time_dependent_log_prob,
-        annealed_distribution.score_fn,
-        augmented_dim,
-        batch_particles
-    )
-    
+
+    # ---------------------------------------------
+    # NEW: iterate over multiple gradient steps per epoch
+    # ---------------------------------------------
+    steps_per_epoch = max(1, full_dataset.xr.shape[0] // training_batch_size)
+    epoch_losses = []  # store losses to compute an average per epoch
+
+    for step in range(steps_per_epoch):
+        # Sample a batch from the full dataset for this training step
+        key, batch_key = jax.random.split(key)
+        batch_particles = sample_batch_from_data(batch_key, full_dataset, training_batch_size)
+
+        # Training step
+        v_theta, opt_state, current_loss = training_step(
+            v_theta, opt_state, optimizer,
+            annealed_distribution.time_dependent_log_prob,
+            annealed_distribution.score_fn,
+            augmented_dim,
+            batch_particles
+        )
+
+        epoch_losses.append(current_loss)
+
+    # Compute average loss over the epoch for logging/early-stopping etc.
+    current_loss = jnp.mean(jnp.stack(epoch_losses))
+
     # Logging
     if epoch % log_interval == 0:
         elapsed_time = time.time() - start_time
-        print(f"Epoch {epoch:4d} | Loss: {current_loss:.6f} | Time: {elapsed_time:.1f}s")
+        print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Time: {elapsed_time:.1f}s | Steps: {steps_per_epoch}")
         
         if current_loss < best_loss:
             best_loss = current_loss
