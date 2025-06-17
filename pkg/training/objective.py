@@ -31,9 +31,9 @@ def epsilon(
     score_r = score[-r_dim:]
 
     div_v_r = divergence_wrt_R(v_theta.residual_v, xr, t, r_dim)
-    v = v_theta(xr, t)
-    v_x = v[:-r_dim]
-    v_r = v[-r_dim:]
+    
+    v_x = v_theta.residual_f(xr[-r_dim:], t)
+    v_r = v_theta.residual_v(xr, t)
 
     dt_log_density_unormalised = time_derivative_log_density(xr, t)
     dt_log_density = dt_log_density_unormalised - dt_logZt

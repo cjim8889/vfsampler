@@ -300,7 +300,7 @@ log_interval = 1
 
 # Dataset configuration
 dataset_size = 2560  # Generate more particles for the dataset
-training_batch_size = 256  # Batch size for each training step
+training_batch_size = 16 * time_steps  # Batch size for each training step
 
 # Update wandb config with training hyperparameters
 wandb.config.update({
