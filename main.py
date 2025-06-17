@@ -309,7 +309,7 @@ wandb.config.update({
     "dataset_size": dataset_size,
     "training_batch_size": training_batch_size,
     "data_refresh_interval": data_refresh_interval,
-})
+}, allow_val_change=True)
 
 # ------------------------------------------------------------------
 # 1.  Bundle all learnable components into a single TrainState so that the
