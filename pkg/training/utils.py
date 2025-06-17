@@ -25,8 +25,10 @@ def divergence_wrt_R(
     r_dim: int,
 ) -> float:
     x, r = xr[:-r_dim], xr[-r_dim:]
-
+    print(x.shape, r.shape)
     def v_r(r):
-        return v_theta(r, t)
+        out = v_theta(jnp.concatenate([x, r]), t)
+        return out
+    
 
     return jnp.trace(jax.jacfwd(v_r)(r))

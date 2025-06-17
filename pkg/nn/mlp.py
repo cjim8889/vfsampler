@@ -36,7 +36,6 @@ class MLPVelocityField(eqx.Module):
     norm: eqx.nn.LayerNorm
     output_proj: eqx.nn.Linear
     conditioning: AdaptiveFeatureProjection
-    augmented_dim: int
     dt: float
 
     def __init__(
@@ -45,16 +44,13 @@ class MLPVelocityField(eqx.Module):
         in_dim: int,
         out_dim: int, 
         hidden_dim: int, 
-        augmented_dim: int,
         depth: int = 4, 
         dt: float = 0.01
     ):
         keys = jax.random.split(key, 6)
         self.dt = dt
-        self.augmented_dim = augmented_dim
-
         # Input processing
-        in_dim = augmented_dim + 1
+        in_dim = in_dim + 1
         self.input_proj = eqx.nn.Linear(in_dim, hidden_dim, key=keys[0])
 
         # Residual blocks
@@ -98,9 +94,7 @@ class MLPVelocityField(eqx.Module):
             t = jnp.array([t])
 
         t = t.reshape(1)
-
-        r = x[-self.augmented_dim:]
-        inputs = jnp.concatenate([r, t])
+        inputs = jnp.concatenate([x, t], axis=-1)
 
         h = self.input_proj(inputs)
 
@@ -110,3 +104,45 @@ class MLPVelocityField(eqx.Module):
             h = block(h + cond)  # Additive conditioning
 
         return self.output_proj(self.norm(h))
+
+
+class AugmentedResidualField(eqx.Module):
+    f_residual: MLPVelocityField
+    v_residual: MLPVelocityField
+    f_natural: Callable[[Float[Array, "augmented_dim"]], Float[Array, "x_dim"]] = eqx.field(static=True)
+    v_natural: Callable[[Float[Array, "x_dim"], float], Float[Array, "augmented_dim"]] = eqx.field(static=True)
+    x_dim: int = eqx.field(static=True)
+    augmented_dim: int = eqx.field(static=True)
+
+    def __init__(self, 
+        key: PRNGKeyArray, 
+        x_dim: int, 
+        hidden_dim: int, 
+        augmented_dim: int,
+        f_natural: Callable[[Float[Array, "augmented_dim"]], Float[Array, "x_dim"]],
+        v_natural: Callable[[Float[Array, "x_dim"], float], Float[Array, "augmented_dim"]],
+        depth: int = 4, 
+        dt: float = 0.01,
+    ):
+        self.x_dim = x_dim
+        self.augmented_dim = augmented_dim
+
+        self.f_natural = f_natural
+        self.v_natural = v_natural
+
+        keys = jax.random.split(key, 2)
+        self.f_residual = MLPVelocityField(keys[0], augmented_dim, x_dim, hidden_dim, depth, dt)
+        self.v_residual = MLPVelocityField(keys[1], x_dim + augmented_dim, augmented_dim, hidden_dim, depth, dt)
+
+    def __call__(self, xr: Float[Array, "x_dim + augmented_dim"], t: float) -> Float[Array, "x_dim"]:
+        x, r = xr[:self.x_dim], xr[self.x_dim:]
+        f_residual = self.f_residual(r, t) + self.f_natural(r)
+        v_residual = self.v_residual(xr, t) + self.v_natural(x, t)
+        return jnp.concatenate([f_residual, v_residual], axis=0)
+    
+    def residual_f(self, r: Float[Array, "augmented_dim"], t: float) -> Float[Array, "x_dim"]:
+        return self.f_residual(r, t)
+    
+    def residual_v(self, xr: Float[Array, "x_dim + augmented_dim"], t: float) -> Float[Array, "augmented_dim"]:
+        return self.v_residual(xr, t)
+    

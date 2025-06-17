@@ -6,6 +6,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Float
 
 from .utils import divergence_wrt_R
+from pkg.nn.mlp import AugmentedResidualField
 
 
 class Particle(eqx.Module):
@@ -16,7 +17,7 @@ class Particle(eqx.Module):
 
 @eqx.filter_jit
 def epsilon(
-    v_theta: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
+    v_theta: AugmentedResidualField,
     particle: Particle,
     score_fn: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
     time_derivative_log_density: Callable[[Float[Array, "dim"], float], float],
@@ -29,7 +30,7 @@ def epsilon(
     score_x = score[:-r_dim]
     score_r = score[-r_dim:]
 
-    div_v_r = divergence_wrt_R(v_theta, xr, t, r_dim)
+    div_v_r = divergence_wrt_R(v_theta.residual_v, xr, t, r_dim)
     v = v_theta(xr, t)
     v_x = v[:-r_dim]
     v_r = v[-r_dim:]
@@ -47,7 +48,7 @@ def epsilon(
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 
 def loss_fn(
-    v_theta: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
+    v_theta: AugmentedResidualField,
     particles: Particle,
     time_derivative_log_density: Callable[[Float[Array, "dim"], float], float],
     score_fn: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
