@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import optax
 import matplotlib.pyplot as plt
+import wandb
 from jaxtyping import PRNGKeyArray
 
 from pkg.distributions.augmented_annealing import AugmentedAnnealedDistribution
@@ -18,9 +19,11 @@ from pkg.training.objective import Particle, loss_fn
 from pkg.ode.integration import generate_samples
 
 key = jax.random.PRNGKey(555)
-batch_size = 128
+time_steps = 128
+
+batch_size = 16 * time_steps
 augmented_dim = 2
-ts = jnp.linspace(0, 1, 64)
+ts = jnp.linspace(0, 1, time_steps)
 
 initial_distribution = MultivariateGaussian(
     sigma=20.,
@@ -59,8 +62,8 @@ v_theta = AugmentedResidualField(
 
 # initial x
 key, subkey = jax.random.split(key)
-initial_x = initial_distribution.sample(subkey, (batch_size,))
-initial_r = augmented_distribution.sample(subkey, (batch_size,))
+initial_x = initial_distribution.sample(subkey, (4000,))
+initial_r = augmented_distribution.sample(subkey, (4000,))
 
 key, subkey = jax.random.split(key)
 smc_samples = generate_samples_with_smc(
@@ -106,6 +109,44 @@ loss, raw_epsilons = loss_fn(
 # Display initial diagnostics
 print(raw_epsilons)
 print(f"Initial loss: {loss}")
+
+# ================== WANDB INITIALIZATION ==================
+
+# Initialize wandb for experiment tracking
+# This logs: hyperparameters, training metrics (loss, time), visualizations,
+# dataset refreshes, and final results. Change project name as needed.
+wandb.init(
+    project="augmented-flow-sampling",
+    config={
+        "batch_size": batch_size,
+        "augmented_dim": augmented_dim,
+        "time_steps": len(ts),
+        "learning_rate": None,  # Will be set later
+        "num_epochs": None,    # Will be set later
+        "dataset_size": None,  # Will be set later
+        "training_batch_size": None,  # Will be set later
+        "data_refresh_interval": None,  # Will be set later
+        "initial_distribution_sigma": initial_distribution.sigma,
+        "target_distribution_type": "GMM",
+        "v_theta_hidden_dim": 128,
+        "v_theta_depth": 4,
+        "smc_num_hmc_steps": 5,
+        "smc_num_integration_steps": 4,
+        "smc_step_size": 0.1,
+    }
+)
+
+# Log initial metrics
+wandb.log({
+    "initial_loss": loss,
+    "initial_raw_epsilons": raw_epsilons.mean(),
+    "initial_ess_mean": ess.mean(),
+    "initial_ess_min": ess.min(),
+    "initial_ess_final": ess[-1],  # ESS at final time step
+})
+
+# Log initial SMC visualization
+wandb.log({"initial_smc_samples": wandb.Image("smc_samples.png")})
 
 # ================== TRAINING BOILERPLATE ==================
 
@@ -237,12 +278,19 @@ def visualize_generated_samples(state: "TrainState", key, target_distribution, i
     fig = target_distribution.visualise(final_positions_main)
     plt.title(f"Generated Samples - Epoch {epoch}")
     
-    # Save the plot
+    # Save the plot locally and log to wandb
     plot_path = os.path.join(vis_dir, f"epoch_{epoch:04d}.png")
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    
+    # Log to wandb
+    wandb.log({
+        "generated_samples": wandb.Image(plot_path),
+        "epoch": epoch
+    })
+    
     plt.close(fig)
     
-    print(f"          | Saved visualization to {plot_path}")
+    print(f"          | Saved visualization to {plot_path} and logged to wandb")
 
 # Training configuration
 learning_rate = 1e-4
@@ -253,6 +301,15 @@ log_interval = 1
 # Dataset configuration
 dataset_size = 2560  # Generate more particles for the dataset
 training_batch_size = 256  # Batch size for each training step
+
+# Update wandb config with training hyperparameters
+wandb.config.update({
+    "learning_rate": learning_rate,
+    "num_epochs": num_epochs,
+    "dataset_size": dataset_size,
+    "training_batch_size": training_batch_size,
+    "data_refresh_interval": data_refresh_interval,
+})
 
 # ------------------------------------------------------------------
 # 1.  Bundle all learnable components into a single TrainState so that the
@@ -306,6 +363,12 @@ for epoch in range(num_epochs):
         )
         if epoch > 0:
             print(f"Epoch {epoch}: Generated fresh training dataset ({full_dataset.xr.shape[0]} particles)")
+            # Log dataset refresh to wandb
+            wandb.log({
+                "dataset_refresh": 1,
+                "dataset_size": full_dataset.xr.shape[0],
+                "epoch": epoch
+            })
 
     # ---------------------------------------------
     # NEW: iterate over multiple gradient steps per epoch
@@ -328,6 +391,12 @@ for epoch in range(num_epochs):
 
         if step % 10 == 0:
             print(f"Step {step} | Loss: {current_loss:.6f}")
+            # Log step-level metrics to wandb
+            wandb.log({
+                "step_loss": current_loss,
+                "global_step": epoch * steps_per_epoch + step,
+                "epoch": epoch
+            })
 
         epoch_losses.append(current_loss)
 
@@ -339,9 +408,22 @@ for epoch in range(num_epochs):
         elapsed_time = time.time() - start_time
         print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Time: {elapsed_time:.1f}s | Steps: {steps_per_epoch}")
         
+        # Log epoch-level metrics to wandb
+        wandb.log({
+            "epoch": epoch,
+            "avg_loss": current_loss,
+            "elapsed_time": elapsed_time,
+            "steps_per_epoch": steps_per_epoch,
+        })
+        
         if current_loss < best_loss:
             best_loss = current_loss
             print(f"          | New best loss: {best_loss:.6f}")
+            # Log new best loss
+            wandb.log({
+                "best_loss": best_loss,
+                "epoch": epoch
+            })
 
     # Visualize generated samples every 10 epochs
     if epoch % 3 == 0:
@@ -378,6 +460,24 @@ print(f"Initial loss: {loss:.6f}")
 print(f"Final loss: {final_loss:.6f}")
 print(f"Best loss: {best_loss:.6f}")
 print(f"Total time: {time.time() - start_time:.1f}s")
+
+# Log final results to wandb
+total_training_time = time.time() - start_time
+wandb.log({
+    "final_loss": final_loss,
+    "best_loss": best_loss,
+    "total_training_time": total_training_time,
+    "loss_improvement": loss - final_loss,
+    "loss_improvement_ratio": (loss - final_loss) / loss if loss != 0 else 0,
+})
+
+# Generate and log final visualization
+key, final_vis_key = jax.random.split(key)
+visualize_generated_samples(train_state, final_vis_key, target_distribution, initial_distribution, 
+                           ts, augmented_dim, epoch=num_epochs, num_vis_samples=10000)
+
+# Close wandb run
+wandb.finish()
 
 
 
