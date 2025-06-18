@@ -25,7 +25,7 @@ app = typer.Typer()
 def main(
     batch_size_multiplier: int = typer.Option(16, "--batch-size-multiplier", "-b", help="Multiplier for batch size (batch_size = multiplier * time_steps)"),
     soft_constraint: bool = typer.Option(False, "--soft-constraint", "-s", help="Enable soft constraint"),
-    initial_sigma: float = typer.Option(1.0, "--initial-sigma", help="Sigma for initial distribution"),
+    initial_sigma: float = typer.Option(20.0, "--initial-sigma", help="Sigma for initial distribution"),
     augmented_sigma: float = typer.Option(1.0, "--augmented-sigma", help="Sigma for augmented distribution"),
     dataset_size: int = typer.Option(2560, "--dataset-size", "-d", help="Size of the training dataset"),
     learning_rate: float = typer.Option(1e-4, "--learning-rate", "-lr", help="Learning rate for training"),
@@ -117,7 +117,7 @@ def main(
     loss, raw_epsilons = loss_fn(
         v_theta=v_theta,
         particles=particles,
-        time_derivative_log_density=annealed_distribution.time_dependent_log_prob,
+        time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
         score_fn=annealed_distribution.score_fn,
         r_dim=augmented_dim,
     )
@@ -201,6 +201,8 @@ def main(
             ts=ts,
             time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
         )
+
+        print(dt_logZt)
         
         # Return all particles (flattened across time and trajectory dimensions)
         time_steps, num_particles, dim = xrs.shape
@@ -244,7 +246,7 @@ def main(
             loss, _ = loss_fn(
                 v_theta=vt,
                 particles=particles,
-                time_derivative_log_density=ad.time_dependent_log_prob,
+                time_derivative_log_density=ad.unnormalised_time_derivative,
                 score_fn=ad.score_fn,
                 r_dim=r_dim,
                 soft_constraint=soft_constraint,
@@ -464,7 +466,7 @@ def main(
     final_loss, _ = loss_fn(
         v_theta=train_state.v_theta,
         particles=test_particles,
-        time_derivative_log_density=train_state.annealed_distribution.time_dependent_log_prob,
+        time_derivative_log_density=train_state.annealed_distribution.unnormalised_time_derivative,
         score_fn=train_state.annealed_distribution.score_fn,
         r_dim=augmented_dim,
     )
