@@ -21,20 +21,20 @@ from pkg.ode.integration import generate_samples
 key = jax.random.PRNGKey(555)
 time_steps = 128
 
-soft_constraint = True
+soft_constraint = False
 batch_size = 16 * time_steps
 augmented_dim = 2
 ts = jnp.linspace(0, 1, time_steps)
 
 initial_distribution = MultivariateGaussian(
-    sigma=20.,
+    sigma=1.,
     mean=0,
     dim=2,
 )
 augmented_distribution = MultivariateGaussian(
     dim=augmented_dim,
     mean=0,
-    sigma=20.0,
+    sigma=1.0,
 )
 target_distribution = GMM(
     key=key,
