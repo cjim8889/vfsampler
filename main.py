@@ -1,23 +1,24 @@
-import time
 import os
+import time
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
 import matplotlib.pyplot as plt
-import wandb
+import optax
 import typer
 from jaxtyping import PRNGKeyArray
 
+import wandb
 from pkg.distributions.augmented_annealing import AugmentedAnnealedDistribution
+from pkg.distributions.conditional_gaussian import LearnableDiagGaussian
 from pkg.distributions.gaussian import MultivariateGaussian
 from pkg.distributions.gmm import GMM
 from pkg.mcmc.smc import generate_samples_with_smc
 from pkg.nn.mlp import AugmentedResidualField
+from pkg.ode.integration import generate_samples
 from pkg.training.dt_logZt import estimate_dt_logZt
 from pkg.training.objective import Particle, loss_fn
-from pkg.ode.integration import generate_samples
 
 app = typer.Typer()
 
@@ -46,11 +47,18 @@ def main(
         mean=0,
         dim=2,
     )
-    augmented_distribution = MultivariateGaussian(
-        dim=augmented_dim,
-        mean=0,
-        sigma=augmented_sigma,
+    # augmented_distribution = MultivariateGaussian(
+    #     dim=augmented_dim,
+    #     mean=0,
+    #     sigma=augmented_sigma,
+    # )
+
+    augmented_distribution = LearnableDiagGaussian(
+        dim_r=augmented_dim,
+        dim_x=2,
+        key=key,
     )
+
     target_distribution = GMM(
         key=key,
         dim=2,
@@ -61,7 +69,7 @@ def main(
         target_density=target_distribution,
         augmented_density=augmented_distribution,
         augmented_dim=augmented_dim,
-        is_conditional=False,
+        is_conditional=True,
     )
 
     key, subkey = jax.random.split(key)
@@ -79,7 +87,7 @@ def main(
     # initial x
     key, subkey = jax.random.split(key)
     initial_x = initial_distribution.sample(subkey, (4000,))
-    initial_r = augmented_distribution.sample(subkey, (4000,))
+    initial_r = augmented_distribution.sample(subkey, initial_x)
 
     key, subkey = jax.random.split(key)
     smc_samples = generate_samples_with_smc(
@@ -177,7 +185,7 @@ def main(
         
         # Generate initial samples
         initial_x = initial_distribution.sample(key_initial, (batch_size,))
-        initial_r = augmented_distribution.sample(key_initial_r, (batch_size,))
+        initial_r = augmented_distribution.sample(key_initial_r, initial_x)
 
         iniital_samples = jnp.concatenate([initial_x, initial_r], axis=1)
         
@@ -187,7 +195,7 @@ def main(
             initial_samples=iniital_samples,
             time_dependent_log_density=annealed_distribution.time_dependent_log_prob,
             ts=ts,
-            num_hmc_steps=5,
+            num_hmc_steps=10,
             num_integration_steps=4,
             step_size=0.1,
         )
@@ -279,7 +287,7 @@ def main(
         def sample_fn(key, shape):
             key, subkey = jax.random.split(key)
             x = initial_distribution.sample(key, shape)
-            r = augmented_distribution.sample(subkey, shape)
+            r = augmented_distribution.sample(subkey, x)
             return jnp.concatenate([x, r], axis=1)
         
         # Generate samples by integrating the velocity field
