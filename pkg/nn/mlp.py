@@ -136,13 +136,14 @@ class AugmentedResidualField(eqx.Module):
 
     def __call__(self, xr: Float[Array, "x_dim + augmented_dim"], t: float) -> Float[Array, "x_dim"]:
         x, r = xr[:self.x_dim], xr[self.x_dim:]
-        f_residual = self.f_residual(r, t)
-        v_residual = self.v_residual(xr, t)
+        f_residual = self.f_residual(r, t) + self.f_natural(r)
+        v_residual = self.v_residual(xr, t) + self.v_natural(x, t)
         return jnp.concatenate([f_residual, v_residual], axis=0)
     
     def residual_f(self, r: Float[Array, "augmented_dim"], t: float) -> Float[Array, "x_dim"]:
-        return self.f_residual(r, t)
+        return self.f_residual(r, t) + self.f_natural(r)
     
     def residual_v(self, xr: Float[Array, "x_dim + augmented_dim"], t: float) -> Float[Array, "augmented_dim"]:
-        return self.v_residual(xr, t)
+        x, r = xr[:self.x_dim], xr[self.x_dim:]
+        return self.v_residual(xr, t) + self.v_natural(x, t)
     
