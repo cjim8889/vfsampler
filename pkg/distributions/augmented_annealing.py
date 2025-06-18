@@ -3,7 +3,6 @@ from typing import Any
 import chex
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from .base import Distribution

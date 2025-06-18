@@ -21,6 +21,7 @@ from pkg.ode.integration import generate_samples
 key = jax.random.PRNGKey(555)
 time_steps = 128
 
+soft_constraint = True
 batch_size = 16 * time_steps
 augmented_dim = 2
 ts = jnp.linspace(0, 1, time_steps)
@@ -227,7 +228,7 @@ def training_step(state: "TrainState", opt_state, optimizer, r_dim: int, particl
             time_derivative_log_density=ad.time_dependent_log_prob,
             score_fn=ad.score_fn,
             r_dim=r_dim,
-            soft_constraint=True,
+            soft_constraint=soft_constraint,
         )
         return loss
 
