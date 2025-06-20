@@ -33,6 +33,8 @@ def main(
     time_steps: int = typer.Option(128, "--time-steps", "-t", help="Number of time steps"),
     data_refresh_interval: int = typer.Option(10, "--refresh-interval", "-r", help="Epochs between dataset refreshes"),
     random_seed: int = typer.Option(555, "--seed", help="Random seed for reproducibility"),
+    hidden_dim: int = typer.Option(128, "--hidden-dim", "-hd", help="Hidden dimension for the velocity field"),
+    depth: int = typer.Option(4, "--depth", "-d", help="Depth for the velocity field"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
@@ -68,9 +70,9 @@ def main(
     v_theta = AugmentedResidualField(
         key=subkey,
         x_dim=2,
-        hidden_dim=128,
+        hidden_dim=hidden_dim,
         augmented_dim=augmented_dim,
-        depth=4,
+        depth=depth,
         f_natural=jax.grad(lambda r: -augmented_distribution.log_prob(r)),
         v_natural=lambda x, t: jax.grad(lambda x: annealed_distribution.time_dependent_log_prob_without_augmentation(x, t))(x),
         dt=0.01,
@@ -146,8 +148,8 @@ def main(
             "initial_distribution_sigma": initial_sigma,
             "augmented_distribution_sigma": augmented_sigma,
             "target_distribution_type": "GMM",
-            "v_theta_hidden_dim": 128,
-            "v_theta_depth": 4,
+            "v_theta_hidden_dim": hidden_dim,
+            "v_theta_depth": depth,
             "smc_num_hmc_steps": 5,
             "smc_num_integration_steps": 4,
             "smc_step_size": 0.1,
