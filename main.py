@@ -10,11 +10,11 @@ import wandb
 import typer
 from jaxtyping import PRNGKeyArray
 
-from pkg.distributions.augmented_annealing import AugmentedAnnealedDistribution
+from pkg.distributions.annealing import AnnealedDistribution
 from pkg.distributions.gaussian import MultivariateGaussian
 from pkg.distributions.gmm import GMM
 from pkg.mcmc.smc import generate_samples_with_smc
-from pkg.nn.mlp import AugmentedResidualField
+from pkg.nn.mlp import MLPVelocityField
 from pkg.training.dt_logZt import estimate_dt_logZt
 from pkg.training.objective import Particle, loss_fn
 from pkg.ode.integration import generate_samples
@@ -24,9 +24,7 @@ app = typer.Typer()
 @app.command()
 def main(
     batch_size_multiplier: int = typer.Option(16, "--batch-size-multiplier", "-b", help="Multiplier for batch size (batch_size = multiplier * time_steps)"),
-    soft_constraint: bool = typer.Option(False, "--soft-constraint", "-s", help="Enable soft constraint"),
     initial_sigma: float = typer.Option(20.0, "--initial-sigma", help="Sigma for initial distribution"),
-    augmented_sigma: float = typer.Option(1.0, "--augmented-sigma", help="Sigma for augmented distribution"),
     dataset_size: int = typer.Option(2560, "--dataset-size", "-d", help="Size of the training dataset"),
     learning_rate: float = typer.Option(1e-4, "--learning-rate", "-lr", help="Learning rate for training"),
     num_epochs: int = typer.Option(1000, "--epochs", "-e", help="Number of training epochs"),
@@ -40,7 +38,6 @@ def main(
     
     key = jax.random.PRNGKey(random_seed)
     batch_size = batch_size_multiplier * time_steps
-    augmented_dim = 2
     ts = jnp.linspace(0, 1, time_steps)
 
     initial_distribution = MultivariateGaussian(
@@ -48,72 +45,61 @@ def main(
         mean=0,
         dim=2,
     )
-    augmented_distribution = MultivariateGaussian(
-        dim=augmented_dim,
-        mean=0,
-        sigma=augmented_sigma,
-    )
     target_distribution = GMM(
         key=key,
         dim=2,
     )
 
-    annealed_distribution = AugmentedAnnealedDistribution(
+    annealed_distribution = AnnealedDistribution(
         initial_density=initial_distribution,
         target_density=target_distribution,
-        augmented_density=augmented_distribution,
-        augmented_dim=augmented_dim,
-        is_conditional=False,
     )
 
     key, subkey = jax.random.split(key)
-    v_theta = AugmentedResidualField(
+    v_theta = MLPVelocityField(
         key=subkey,
-        x_dim=2,
+        in_dim=2,
+        out_dim=2,
         hidden_dim=hidden_dim,
-        augmented_dim=augmented_dim,
         depth=depth,
-        f_natural=jax.grad(lambda r: -augmented_distribution.log_prob(r)),
-        v_natural=lambda x, t: jax.grad(lambda x: annealed_distribution.time_dependent_log_prob_without_augmentation(x, t))(x),
         dt=0.01,
     )
 
     # initial x
     key, subkey = jax.random.split(key)
     initial_x = initial_distribution.sample(subkey, (4000,))
-    initial_r = augmented_distribution.sample(subkey, (4000,))
 
     key, subkey = jax.random.split(key)
     smc_samples = generate_samples_with_smc(
         key=subkey,
-        initial_samples=jnp.concatenate([initial_x, initial_r], axis=1),
-        time_dependent_log_density=annealed_distribution.time_dependent_log_prob,
+        initial_samples=initial_x,
+        time_dependent_log_density=annealed_distribution.time_dependent_unnormalised_log_prob,
         ts=ts,
         num_hmc_steps=5,
         num_integration_steps=4,
         step_size=0.1,
     )
 
-    xrs = smc_samples["positions"]
+    xs = smc_samples["positions"]
     weights = smc_samples["weights"]
     ess = smc_samples["ess"]
 
     # Visualise the samples
-    fig = target_distribution.visualise(xrs[-1, :, :2])
+    fig = target_distribution.visualise(xs[-1, :])      
     plt.savefig("smc_samples.png", dpi=150, bbox_inches='tight')
     plt.close(fig)
 
     dt_logZt = estimate_dt_logZt(
-        xs=xrs,
+        xs=xs,
         weights=weights,
         ts=ts,
         time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
     )
 
     particles = Particle(
-        xr=xrs.reshape(-1, 2 + augmented_dim),
-        t=jnp.repeat(ts, xrs.shape[1]),
-        dt_logZt=jnp.repeat(dt_logZt, xrs.shape[1]),
+        x=xs.reshape(-1, 2),
+        t=jnp.repeat(ts, xs.shape[1]),
+        dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
     )
 
     loss, raw_epsilons = loss_fn(
@@ -121,7 +107,7 @@ def main(
         particles=particles,
         time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
         score_fn=annealed_distribution.score_fn,
-        r_dim=augmented_dim,
+        num_frequencies=4,
     )
 
     # Display initial diagnostics
@@ -133,12 +119,11 @@ def main(
     # Initialize wandb for experiment tracking
     # This logs: hyperparameters, training metrics (loss, time), visualizations,
     # dataset refreshes, and final results. Change project name as needed.
-    wandb.init(
-        project="augmented-flow-sampling",
+    wandb.init( 
+        project="variational-flow-sampling",
         config={
             "batch_size": batch_size,
             "batch_size_multiplier": batch_size_multiplier,
-            "augmented_dim": augmented_dim,
             "time_steps": len(ts),
             "learning_rate": learning_rate,
             "num_epochs": num_epochs,
@@ -146,14 +131,12 @@ def main(
             "training_batch_size": batch_size,  # Updated to use batch_size
             "data_refresh_interval": data_refresh_interval,
             "initial_distribution_sigma": initial_sigma,
-            "augmented_distribution_sigma": augmented_sigma,
             "target_distribution_type": "GMM",
             "v_theta_hidden_dim": hidden_dim,
             "v_theta_depth": depth,
             "smc_num_hmc_steps": 5,
             "smc_num_integration_steps": 4,
             "smc_step_size": 0.1,
-            "soft_constraint": soft_constraint,
             "random_seed": random_seed,
         }
     )
@@ -172,33 +155,29 @@ def main(
 
     # ================== TRAINING BOILERPLATE ==================
 
-    def generate_training_data(key: PRNGKeyArray, batch_size: int, initial_distribution: any, augmented_distribution: any, 
-                              annealed_distribution: AugmentedAnnealedDistribution, ts: jnp.ndarray, augmented_dim: int):
+    def generate_training_data(key: PRNGKeyArray, batch_size: int, initial_distribution: any, annealed_distribution: AnnealedDistribution, ts: jnp.ndarray):
         """Generate full training dataset using SMC sampling."""
-        key_initial, key_initial_r, key_smc, key_aug = jax.random.split(key, 4)
+        key_initial, key_smc = jax.random.split(key, 2)
         
         # Generate initial samples
         initial_x = initial_distribution.sample(key_initial, (batch_size,))
-        initial_r = augmented_distribution.sample(key_initial_r, (batch_size,))
-
-        iniital_samples = jnp.concatenate([initial_x, initial_r], axis=1)
         
         # Run SMC sampling
         smc_samples = generate_samples_with_smc(
             key=key_smc,
-            initial_samples=iniital_samples,
-            time_dependent_log_density=annealed_distribution.time_dependent_log_prob,
+            initial_samples=initial_x,
+            time_dependent_log_density=annealed_distribution.time_dependent_unnormalised_log_prob,
             ts=ts,
             num_hmc_steps=5,
             num_integration_steps=4,
             step_size=0.1,
         )
         
-        xrs = smc_samples["positions"]
+        xs = smc_samples["positions"]
         weights = smc_samples["weights"]
         
         dt_logZt = estimate_dt_logZt(
-            xs=xrs,
+            xs=xs,
             weights=weights,
             ts=ts,
             time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
@@ -207,11 +186,11 @@ def main(
         print(dt_logZt)
         
         # Return all particles (flattened across time and trajectory dimensions)
-        time_steps, num_particles, dim = xrs.shape
-        all_particles_flat = xrs.reshape(-1, dim)  # (time_steps * num_particles, dim)
+        time_steps, num_particles, dim = xs.shape
+        all_particles_flat = xs.reshape(-1, dim)  # (time_steps * num_particles, dim)
         
         particles = Particle(
-            xr=all_particles_flat,
+            x=all_particles_flat,
             t=jnp.repeat(ts, num_particles),
             dt_logZt=jnp.repeat(dt_logZt, num_particles),
         )
@@ -220,7 +199,7 @@ def main(
 
     def sample_batch_from_data(key, particles, batch_size):
         """Sample a batch from the full training dataset."""
-        total_size = particles.xr.shape[0]
+        total_size = particles.x.shape[0]
         batch_indices = jax.random.choice(
             key, 
             total_size, 
@@ -229,7 +208,7 @@ def main(
         )
         
         batch_particles = Particle(
-            xr=particles.xr[batch_indices],
+            x=particles.x[batch_indices],
             t=particles.t[batch_indices],
             dt_logZt=particles.dt_logZt[batch_indices],
         )
@@ -237,7 +216,7 @@ def main(
         return batch_particles
 
     @eqx.filter_jit
-    def training_step(state: "TrainState", opt_state, optimizer, r_dim: int, particles: Particle):
+    def training_step(state: "TrainState", opt_state, optimizer, particles: Particle):
         """Performs a single gradient step updating both the velocity field and
         the learnable components inside the annealed distribution."""
 
@@ -250,8 +229,7 @@ def main(
                 particles=particles,
                 time_derivative_log_density=ad.unnormalised_time_derivative,
                 score_fn=ad.score_fn,
-                r_dim=r_dim,
-                soft_constraint=soft_constraint,
+                num_frequencies=4,
             )
             return loss
 
@@ -268,7 +246,7 @@ def main(
         return state, opt_state, loss
 
     def visualize_generated_samples(state: "TrainState", key, target_distribution, initial_distribution,
-                                   ts, augmented_dim, num_vis_samples=5000, epoch=0):
+                                   ts, num_vis_samples=5000, epoch=0):
         """Generate samples using current model (velocity field + distribution) and
         save a scatter plot of the generated data."""
 
@@ -281,8 +259,7 @@ def main(
         def sample_fn(key, shape):
             key, subkey = jax.random.split(key)
             x = initial_distribution.sample(key, shape)
-            r = augmented_distribution.sample(subkey, shape)
-            return jnp.concatenate([x, r], axis=1)
+            return x
         
         # Generate samples by integrating the velocity field
         generated_data = generate_samples(
@@ -296,10 +273,9 @@ def main(
         
         # Extract final positions (remove augmented dimensions)
         final_positions = generated_data["positions"]  # Take final time step
-        final_positions_main = final_positions[:, :2]  # Remove augmented dimensions
         
         # Visualize using the target distribution's visualization method
-        fig = target_distribution.visualise(final_positions_main)
+        fig = target_distribution.visualise(final_positions)
         plt.title(f"Generated Samples - Epoch {epoch}")
         
         # Save the plot locally and log to wandb
@@ -322,9 +298,7 @@ def main(
 
     print("Training Configuration:")
     print(f"  Batch size: {batch_size} (multiplier: {batch_size_multiplier})")
-    print(f"  Soft constraint: {soft_constraint}")
     print(f"  Initial distribution sigma: {initial_sigma}")
-    print(f"  Augmented distribution sigma: {augmented_sigma}")
     print(f"  Dataset size: {dataset_size}")
     print(f"  Learning rate: {learning_rate}")
     print(f"  Number of epochs: {num_epochs}")
@@ -346,8 +320,8 @@ def main(
         `eqx.field(static=True)` in their own class definitions (see
         `AugmentedAnnealedDistribution`)."""
 
-        v_theta: AugmentedResidualField
-        annealed_distribution: AugmentedAnnealedDistribution
+        v_theta: MLPVelocityField
+        annealed_distribution: AnnealedDistribution
 
     # Instantiate the train state
     train_state = TrainState(v_theta=v_theta, annealed_distribution=annealed_distribution)
@@ -375,17 +349,15 @@ def main(
                 data_key,
                 dataset_size,
                 initial_distribution,
-                train_state.annealed_distribution.augmented_density,
                 train_state.annealed_distribution,
                 ts,
-                augmented_dim,
             )
             if epoch > 0:
-                print(f"Epoch {epoch}: Generated fresh training dataset ({full_dataset.xr.shape[0]} particles)")
+                print(f"Epoch {epoch}: Generated fresh training dataset ({full_dataset.x.shape[0]} particles)")
                 # Log dataset refresh to wandb
                 wandb.log({
                     "dataset_refresh": 1,
-                    "dataset_size": full_dataset.xr.shape[0],
+                    "dataset_size": full_dataset.x.shape[0],
                     "epoch": epoch
                 })
 
@@ -404,7 +376,6 @@ def main(
             # Training step
             train_state, opt_state, current_loss = training_step(
                 train_state, opt_state, optimizer,
-                augmented_dim,
                 batch_particles
             )
 
@@ -447,7 +418,7 @@ def main(
         # Visualize generated samples every 10 epochs
         if epoch % 3 == 0:
             visualize_generated_samples(train_state, key, target_distribution, initial_distribution, 
-                                        ts, augmented_dim, epoch=epoch)
+                                        ts, epoch=epoch)
 
     # Final evaluation
     key, test_key = jax.random.split(key)
@@ -455,10 +426,8 @@ def main(
         test_key,
         dataset_size,
         initial_distribution,
-        train_state.annealed_distribution.augmented_density,
         train_state.annealed_distribution,
         ts,
-        augmented_dim,
     )
 
     # Sample a batch for evaluation
@@ -470,7 +439,7 @@ def main(
         particles=test_particles,
         time_derivative_log_density=train_state.annealed_distribution.unnormalised_time_derivative,
         score_fn=train_state.annealed_distribution.score_fn,
-        r_dim=augmented_dim,
+        num_frequencies=4,
     )
 
     print("-" * 60)
@@ -493,7 +462,7 @@ def main(
     # Generate and log final visualization
     key, final_vis_key = jax.random.split(key)
     visualize_generated_samples(train_state, final_vis_key, target_distribution, initial_distribution, 
-                               ts, augmented_dim, epoch=num_epochs, num_vis_samples=10000)
+                               ts, epoch=num_epochs, num_vis_samples=10000)
 
     # Close wandb run
     wandb.finish()

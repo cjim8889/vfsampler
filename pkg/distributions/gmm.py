@@ -112,6 +112,6 @@ class GMM(Distribution):
                 grid_width_n_points=200,
             )
 
-        plt.axis("off")  # Updated axis styling
+        plt.axis("on")  # Updated axis styling
 
         return fig
