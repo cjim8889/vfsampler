@@ -34,6 +34,7 @@ def main(
     random_seed: int = typer.Option(555, "--seed", help="Random seed for reproducibility"),
     hidden_dim: int = typer.Option(128, "--hidden-dim", "-hd", help="Hidden dimension for the velocity field"),
     depth: int = typer.Option(4, "--depth", "-dp", help="Depth for the velocity field"),
+    num_frequencies: int = typer.Option(4, "--num-frequencies", "-nf", help="Number of frequencies for the velocity field"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
@@ -109,7 +110,7 @@ def main(
         particles=particles,
         time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
         score_fn=annealed_distribution.score_fn,
-        num_frequencies=4,
+        num_frequencies=num_frequencies,
     )
 
     # Display initial diagnostics
@@ -231,7 +232,7 @@ def main(
                 particles=particles,
                 time_derivative_log_density=ad.unnormalised_time_derivative,
                 score_fn=ad.score_fn,
-                num_frequencies=4,
+                num_frequencies=num_frequencies,
             )
             return loss
 
@@ -444,7 +445,7 @@ def main(
         particles=test_particles,
         time_derivative_log_density=train_state.annealed_distribution.unnormalised_time_derivative,
         score_fn=train_state.annealed_distribution.score_fn,
-        num_frequencies=4,
+        num_frequencies=num_frequencies,
     )
 
     print("-" * 60)
