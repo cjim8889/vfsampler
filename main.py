@@ -4,6 +4,7 @@ import time
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jmp
 import matplotlib.pyplot as plt
 import optax
 import typer
@@ -16,6 +17,7 @@ from pkg.distributions.gmm import GMM
 from pkg.distributions.multi_double_well import MultiDoubleWellEnergy
 from pkg.mcmc.smc import generate_samples_with_smc
 from pkg.nn.mlp import MLPVelocityField
+from pkg.nn.transformer import ParticleTransformerV4
 from pkg.ode.integration import generate_samples
 from pkg.training.dt_logZt import estimate_dt_logZt
 from pkg.training.objective import Particle, loss_fn
@@ -59,13 +61,25 @@ def main(
     )
 
     key, subkey = jax.random.split(key)
-    v_theta = MLPVelocityField(
+    # v_theta = MLPVelocityField(
+    #     key=subkey,
+    #     in_dim=dim,
+    #     out_dim=dim,
+    #     hidden_dim=hidden_dim,
+    #     depth=depth,
+    #     dt=0.01,
+    # )
+    v_theta = ParticleTransformerV4(
+        n_spatial_dim=2,
+        hidden_size=hidden_dim,
+        num_layers=depth,
+        num_heads=4,
         key=subkey,
-        in_dim=dim,
-        out_dim=dim,
-        hidden_dim=hidden_dim,
-        depth=depth,
-        dt=0.01,
+        mp_policy=jmp.Policy(
+            param_dtype=jnp.float32,
+            compute_dtype=jnp.float32,
+            output_dtype=jnp.float32,
+        )
     )
 
     # initial x
