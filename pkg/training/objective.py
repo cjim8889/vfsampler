@@ -33,7 +33,7 @@ def epsilon(
     # dt_log_density = dt_log_density_unormalised - dt_logZt
 
 
-    phi, grad_phi = axis_aligned_fourier_modes(x, num_frequencies, domain_range=(-50., 50.0))
+    phi, grad_phi = axis_aligned_fourier_modes(x, num_frequencies, domain_range=(-15., 15.0))
 
     first_term = phi * dt_log_density_unormalised # (n_frequencies, )
     second_term = phi * (jnp.sum(score * v)) # (n_frequencies, )
