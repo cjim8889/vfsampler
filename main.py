@@ -33,7 +33,7 @@ def main(
     data_refresh_interval: int = typer.Option(10, "--refresh-interval", "-r", help="Epochs between dataset refreshes"),
     random_seed: int = typer.Option(555, "--seed", help="Random seed for reproducibility"),
     hidden_dim: int = typer.Option(128, "--hidden-dim", "-hd", help="Hidden dimension for the velocity field"),
-    depth: int = typer.Option(4, "--depth", "-d", help="Depth for the velocity field"),
+    depth: int = typer.Option(4, "--depth", "-dp", help="Depth for the velocity field"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
@@ -330,6 +330,9 @@ def main(
 
     # Setup optimizer (after creating train_state so we can initialise its params)
     optimizer = optax.adamw(learning_rate)
+    grad_clip = optax.clip_by_global_norm(1.0)
+    zero_nans = optax.zero_nans()
+    optimizer = optax.chain(zero_nans, grad_clip, optimizer)
     opt_state = optimizer.init(eqx.filter(train_state, eqx.is_inexact_array))
 
     # Training loop
