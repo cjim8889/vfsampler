@@ -30,12 +30,12 @@ def epsilon(
     v = v_theta(x, t)
 
     dt_log_density_unormalised = time_derivative_log_density(x, t)
-    # dt_log_density = dt_log_density_unormalised - dt_logZt
+    dt_log_density = dt_log_density_unormalised - dt_logZt
 
 
     phi, grad_phi = axis_aligned_fourier_modes(x, num_frequencies, domain_range=(-15., 15.0))
 
-    first_term = phi * dt_log_density_unormalised # (n_frequencies, )
+    first_term = phi * dt_log_density # (n_frequencies, )
     second_term = phi * (jnp.sum(score * v)) # (n_frequencies, )
     third_term = - jnp.sum(grad_phi * v) # (1, )
 
