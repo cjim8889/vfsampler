@@ -21,6 +21,7 @@ from pkg.nn.transformer import ParticleTransformerV4
 from pkg.ode.integration import generate_samples
 from pkg.training.dt_logZt import estimate_dt_logZt
 from pkg.training.objective import Particle, loss_fn
+from pkg.training.augmentation import batch_augment_particle_coordinates
 
 app = typer.Typer()
 
@@ -37,6 +38,12 @@ def main(
     hidden_dim: int = typer.Option(128, "--hidden-dim", "-hd", help="Hidden dimension for the velocity field"),
     depth: int = typer.Option(4, "--depth", "-dp", help="Depth for the velocity field"),
     num_frequencies: int = typer.Option(4, "--num-frequencies", "-nf", help="Number of frequencies for the velocity field"),
+    # Data augmentation flags
+    enable_rotation: bool = typer.Option(False, "--enable-rotation", help="Enable random rotation augmentation"),
+    enable_translation: bool = typer.Option(False, "--enable-translation", help="Enable random translation augmentation"),
+    enable_noise: bool = typer.Option(False, "--enable-noise", help="Enable random normal noise augmentation"),
+    translation_scale: float = typer.Option(1.0, "--translation-scale", help="Scale for random translation augmentation"),
+    noise_scale: float = typer.Option(1.0, "--noise-scale", help="Scale for random normal noise augmentation"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
@@ -155,6 +162,12 @@ def main(
             "smc_num_integration_steps": 4,
             "smc_step_size": 0.1,
             "random_seed": random_seed,
+            # Data augmentation parameters
+            "enable_rotation": enable_rotation,
+            "enable_translation": enable_translation,
+            "enable_noise": enable_noise,
+            "translation_scale": translation_scale,
+            "noise_scale": noise_scale,
         }
     )
 
@@ -172,7 +185,13 @@ def main(
 
     # ================== TRAINING BOILERPLATE ==================
 
-    def generate_training_data(key: PRNGKeyArray, batch_size: int, initial_distribution: any, annealed_distribution: AnnealedDistribution, ts: jnp.ndarray):
+    def generate_training_data(
+        key: PRNGKeyArray, 
+        batch_size: int, 
+        initial_distribution: any, 
+        annealed_distribution: AnnealedDistribution, 
+        ts: jnp.ndarray
+    ):
         """Generate full training dataset using SMC sampling."""
         key_initial, key_smc = jax.random.split(key, 2)
         
@@ -199,8 +218,6 @@ def main(
             ts=ts,
             time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
         )
-
-        print(dt_logZt)
         
         # Return all particles (flattened across time and trajectory dimensions)
         time_steps, num_particles, dim = xs.shape
@@ -214,20 +231,53 @@ def main(
         
         return particles
 
-    def sample_batch_from_data(key, particles, batch_size):
-        """Sample a batch from the full training dataset."""
+    def sample_batch_from_data(
+        key, 
+        particles, 
+        batch_size,
+        enable_rotation: bool = False,
+        enable_translation: bool = False,
+        enable_noise: bool = False,
+        translation_scale: float = 1.0,
+        noise_scale: float = 0.1
+    ):
+        """Sample a batch from the full training dataset with optional data augmentation."""
+        key_sample, key_aug = jax.random.split(key, 2)
+        
         total_size = particles.x.shape[0]
         batch_indices = jax.random.choice(
-            key, 
+            key_sample, 
             total_size, 
             shape=(min(batch_size, total_size),), 
             replace=False
         )
         
+        batch_x = particles.x[batch_indices]
+        batch_t = particles.t[batch_indices]
+        batch_dt_logZt = particles.dt_logZt[batch_indices]
+        
+        # Apply data augmentation if any augmentation is enabled
+        if enable_rotation or enable_translation or enable_noise:
+            # Generate keys for each particle in the batch
+            aug_keys = jax.random.split(key_aug, batch_x.shape[0])
+            
+            # Apply batch augmentation (assuming 4 particles in 2D space)
+            batch_x = batch_augment_particle_coordinates(
+                batch_x,
+                aug_keys,
+                4,  # num_particles from target_distribution.n_particles
+                2,  # spatial_dim from transformer n_spatial_dim
+                enable_rotation,
+                enable_translation,
+                enable_noise,
+                translation_scale,
+                noise_scale,
+            )
+        
         batch_particles = Particle(
-            x=particles.x[batch_indices],
-            t=particles.t[batch_indices],
-            dt_logZt=particles.dt_logZt[batch_indices],
+            x=batch_x,
+            t=batch_t,
+            dt_logZt=batch_dt_logZt,
         )
         
         return batch_particles
@@ -322,6 +372,10 @@ def main(
     print(f"  Time steps: {time_steps}")
     print(f"  Data refresh interval: {data_refresh_interval}")
     print(f"  Random seed: {random_seed}")
+    print("Data Augmentation:")
+    print(f"  Rotation: {enable_rotation}")
+    print(f"  Translation: {enable_translation} (scale: {translation_scale})")
+    print(f"  Noise: {enable_noise} (scale: {noise_scale})")
 
     # ------------------------------------------------------------------
     # 1.  Bundle all learnable components into a single TrainState so that the
@@ -391,7 +445,16 @@ def main(
         for step in range(steps_per_epoch):
             # Sample a batch from the full dataset for this training step
             key, batch_key = jax.random.split(key)
-            batch_particles = sample_batch_from_data(batch_key, full_dataset, training_batch_size)
+            batch_particles = sample_batch_from_data(
+                batch_key, 
+                full_dataset, 
+                training_batch_size,
+                enable_rotation,
+                enable_translation,
+                enable_noise,
+                translation_scale,
+                noise_scale,
+            )
 
             # Training step
             train_state, opt_state, current_loss = training_step(
@@ -452,7 +515,16 @@ def main(
 
     # Sample a batch for evaluation
     key, eval_batch_key = jax.random.split(key)
-    test_particles = sample_batch_from_data(eval_batch_key, test_dataset, training_batch_size)
+    test_particles = sample_batch_from_data(
+        eval_batch_key, 
+        test_dataset, 
+        training_batch_size,
+        enable_rotation,
+        enable_translation,
+        enable_noise,
+        translation_scale,
+        noise_scale,
+    )
 
     final_loss, _ = loss_fn(
         v_theta=train_state.v_theta,
