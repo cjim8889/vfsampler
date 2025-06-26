@@ -55,17 +55,17 @@ def main(
     ts = jnp.linspace(0, 1, time_steps)
     dim = 8
 
-    # initial_distribution = MultivariateGaussian(
-    #     sigma=initial_sigma,
-    #     mean=0,
-    #     dim=dim,
-    # )
-
-    initial_distribution = ZeroMeanMultivariateGaussian(
-        n_particles=4,
-        space_dim=2,
+    initial_distribution = MultivariateGaussian(
         sigma=initial_sigma,
+        mean=0,
+        dim=dim,
     )
+
+    # initial_distribution = ZeroMeanMultivariateGaussian(
+    #     n_particles=4,
+    #     space_dim=2,
+    #     sigma=initial_sigma,
+    # )
     target_distribution = MultiDoubleWellEnergy(
         dim=dim,
         n_particles=4,
