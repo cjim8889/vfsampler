@@ -46,6 +46,7 @@ def main(
     remove_mean: bool = typer.Option(False, "--remove-mean", help="Remove mean from the training data"),
     translation_scale: float = typer.Option(1.0, "--translation-scale", help="Scale for random translation augmentation"),
     noise_scale: float = typer.Option(1.0, "--noise-scale", help="Scale for random normal noise augmentation"),
+    steps_per_epoch: int = typer.Option(250, "--steps-per-epoch", "-spe", help="Number of steps per epoch"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
@@ -457,7 +458,6 @@ def main(
         # NEW: iterate over multiple gradient steps per epoch
         # ---------------------------------------------
         # steps_per_epoch = max(1, full_dataset.xr.shape[0] // training_batch_size)
-        steps_per_epoch = 250
         epoch_losses = []  # store losses to compute an average per epoch
 
         for step in range(steps_per_epoch):
