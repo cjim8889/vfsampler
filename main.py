@@ -12,7 +12,7 @@ from jaxtyping import PRNGKeyArray
 
 import wandb
 from pkg.distributions.annealing import AnnealedDistribution
-from pkg.distributions.gaussian import MultivariateGaussian
+from pkg.distributions.gaussian import MultivariateGaussian, ZeroMeanMultivariateGaussian
 from pkg.distributions.gmm import GMM
 from pkg.distributions.multi_double_well import MultiDoubleWellEnergy
 from pkg.mcmc.smc import generate_samples_with_smc
@@ -54,10 +54,16 @@ def main(
     ts = jnp.linspace(0, 1, time_steps)
     dim = 8
 
-    initial_distribution = MultivariateGaussian(
+    # initial_distribution = MultivariateGaussian(
+    #     sigma=initial_sigma,
+    #     mean=0,
+    #     dim=dim,
+    # )
+
+    initial_distribution = ZeroMeanMultivariateGaussian(
+        n_particles=4,
+        space_dim=2,
         sigma=initial_sigma,
-        mean=0,
-        dim=dim,
     )
     target_distribution = MultiDoubleWellEnergy(
         dim=dim,
