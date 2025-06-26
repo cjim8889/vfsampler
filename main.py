@@ -31,6 +31,7 @@ def main(
     initial_sigma: float = typer.Option(20.0, "--initial-sigma", help="Sigma for initial distribution"),
     dataset_size: int = typer.Option(2560, "--dataset-size", "-d", help="Size of the training dataset"),
     learning_rate: float = typer.Option(1e-4, "--learning-rate", "-lr", help="Learning rate for training"),
+    weight_decay: float = typer.Option(1e-4, "--weight-decay", "-wd", help="Weight decay for training"),
     num_epochs: int = typer.Option(1000, "--epochs", "-e", help="Number of training epochs"),
     time_steps: int = typer.Option(128, "--time-steps", "-t", help="Number of time steps"),
     data_refresh_interval: int = typer.Option(10, "--refresh-interval", "-r", help="Epochs between dataset refreshes"),
@@ -151,6 +152,7 @@ def main(
             "batch_size_multiplier": batch_size_multiplier,
             "time_steps": len(ts),
             "learning_rate": learning_rate,
+            "weight_decay": weight_decay,
             "num_epochs": num_epochs,
             "dataset_size": dataset_size,
             "training_batch_size": batch_size,  # Updated to use batch_size
@@ -376,10 +378,12 @@ def main(
     print(f"  Initial distribution sigma: {initial_sigma}")
     print(f"  Dataset size: {dataset_size}")
     print(f"  Learning rate: {learning_rate}")
+    print(f"  Weight decay: {weight_decay}")
     print(f"  Number of epochs: {num_epochs}")
     print(f"  Time steps: {time_steps}")
     print(f"  Data refresh interval: {data_refresh_interval}")
     print(f"  Random seed: {random_seed}")
+    print(f"  Remove mean: {remove_mean}")
     print("Data Augmentation:")
     print(f"  Rotation: {enable_rotation}")
     print(f"  Translation: {enable_translation} (scale: {translation_scale})")
@@ -406,7 +410,7 @@ def main(
     train_state = TrainState(v_theta=v_theta, annealed_distribution=annealed_distribution)
 
     # Setup optimizer (after creating train_state so we can initialise its params)
-    optimizer = optax.adamw(learning_rate)
+    optimizer = optax.adamw(learning_rate, weight_decay=weight_decay)
     grad_clip = optax.clip_by_global_norm(1.0)
     zero_nans = optax.zero_nans()
     optimizer = optax.chain(zero_nans, grad_clip, optimizer)
@@ -414,7 +418,7 @@ def main(
 
     # Training loop
     print("Starting training...")
-    print(f"Epochs: {num_epochs}, Learning rate: {learning_rate}")
+    print(f"Epochs: {num_epochs}, Learning rate: {learning_rate}, Weight decay: {weight_decay}")
     print(f"Dataset size: {dataset_size}, Training batch size: {training_batch_size}")
     print(f"Data refresh interval: {data_refresh_interval} epochs")
     print("-" * 60)
