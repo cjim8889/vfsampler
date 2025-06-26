@@ -109,3 +109,49 @@ def axis_aligned_fourier_modes(
     grad_phi   = jnp.concatenate([grad_sin, grad_cos], axis=-2)        # (..., 2M, dim)
 
     return phi, grad_phi
+
+
+def isotropic_gaussian(
+    x: Float[Array, "... dim"],
+    *,
+    sigma: Float[Array, " k"] = jnp.array([0.1, 1.0, 2.0, 4.0, 8.0, 16.0]),          # 1-D array of standard deviations
+) -> tuple[
+    Float[Array, "... k"],              # φ(x)        (n_basis = k)
+    Float[Array, "... k dim"],          # ∇φ(x)       (n_basis = k)
+]:
+    """
+    Isotropic Gaussians centred at the origin for *k* different widths.
+
+        φ_i(x)  = exp( -|x|² / (2 σ_i²) )
+        ∇φ_i(x) = -(x / σ_i²) φ_i(x)                for i = 0,…,k-1
+
+    Parameters
+    ----------
+    x
+        Array of shape (..., dim) — arbitrary batch of points.
+    sigma
+        1-D array with k > 0 entries (all positive).  Each σ_i gives one
+        Gaussian basis function.  A scalar is accepted and treated as
+        length-1.
+
+    Returns
+    -------
+    phi
+        (..., k)          values of all Gaussians at the input points.
+    grad_phi
+        (..., k, dim)     gradients of the k Gaussians.
+    """
+    sigma = jnp.atleast_1d(sigma)               # ensure 1-D
+    # if jnp.any(sigma <= 0):
+        # raise ValueError("all sigma values must be positive")
+
+    # ----------------------------- φ(x) -----------------------------
+    r2  = jnp.sum(x**2, axis=-1, keepdims=True)           # (..., 1)
+    phi = jnp.exp(-r2 / (2.0 * sigma**2))                 # (..., k)  (broadcast)
+
+    # --------------------------- ∇φ(x) -----------------------------
+    x_exp        = x[..., None, :]                        # (..., 1, dim)
+    inv_sigma2   = (1.0 / sigma**2)[None, :, None]        # (1, k, 1)  for broadcast
+    grad_phi     = -x_exp * inv_sigma2 * phi[..., :, None]  # (..., k, dim)
+
+    return phi, grad_phi

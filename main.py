@@ -42,6 +42,7 @@ def main(
     enable_rotation: bool = typer.Option(False, "--enable-rotation", help="Enable random rotation augmentation"),
     enable_translation: bool = typer.Option(False, "--enable-translation", help="Enable random translation augmentation"),
     enable_noise: bool = typer.Option(False, "--enable-noise", help="Enable random normal noise augmentation"),
+    remove_mean: bool = typer.Option(False, "--remove-mean", help="Remove mean from the training data"),
     translation_scale: float = typer.Option(1.0, "--translation-scale", help="Scale for random translation augmentation"),
     noise_scale: float = typer.Option(1.0, "--noise-scale", help="Scale for random normal noise augmentation"),
 ):
@@ -166,6 +167,7 @@ def main(
             "enable_rotation": enable_rotation,
             "enable_translation": enable_translation,
             "enable_noise": enable_noise,
+            "remove_mean": remove_mean,
             "translation_scale": translation_scale,
             "noise_scale": noise_scale,
         }
@@ -238,6 +240,7 @@ def main(
         enable_rotation: bool = False,
         enable_translation: bool = False,
         enable_noise: bool = False,
+        remove_mean: bool = False,
         translation_scale: float = 1.0,
         noise_scale: float = 0.1
     ):
@@ -273,6 +276,11 @@ def main(
                 translation_scale,
                 noise_scale,
             )
+
+        if remove_mean:
+            batch_x = batch_x.reshape(-1, 4, 2)
+            batch_x = batch_x - batch_x.mean(axis=1, keepdims=True)
+            batch_x = batch_x.reshape(-1, 8)
         
         batch_particles = Particle(
             x=batch_x,
@@ -452,6 +460,7 @@ def main(
                 enable_rotation,
                 enable_translation,
                 enable_noise,
+                remove_mean,
                 translation_scale,
                 noise_scale,
             )
@@ -522,6 +531,7 @@ def main(
         enable_rotation,
         enable_translation,
         enable_noise,
+        remove_mean,
         translation_scale,
         noise_scale,
     )
