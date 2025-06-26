@@ -114,7 +114,7 @@ def axis_aligned_fourier_modes(
 def isotropic_gaussian(
     x: Float[Array, "... dim"],
     *,
-    sigma: Float[Array, " k"] = jnp.array([0.1, 1.0, 2.0, 4.0, 8.0, 16.0]),          # 1-D array of standard deviations
+    sigma: Float[Array, " k"] = jnp.array([0.1, 0.5, 0.8, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 16.0, 30.0]),          # 1-D array of standard deviations
 ) -> tuple[
     Float[Array, "... k"],              # φ(x)        (n_basis = k)
     Float[Array, "... k dim"],          # ∇φ(x)       (n_basis = k)

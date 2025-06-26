@@ -32,8 +32,8 @@ def epsilon(
     dt_log_density_unormalised = time_derivative_log_density(x, t)
     dt_log_density = dt_log_density_unormalised - dt_logZt
 
-    # phi, grad_phi = isotropic_gaussian(x)
-    phi, grad_phi = axis_aligned_fourier_modes(x, num_frequencies, domain_range=(-15., 15.0))
+    phi, grad_phi = isotropic_gaussian(x)
+    # phi, grad_phi = axis_aligned_fourier_modes(x, num_frequencies, domain_range=(-15., 15.0))
     grad_phi = grad_phi.reshape(-1, x.shape[-1])
 
     first_term = phi * dt_log_density # (n_frequencies, )
