@@ -47,13 +47,14 @@ def main(
     translation_scale: float = typer.Option(1.0, "--translation-scale", help="Scale for random translation augmentation"),
     noise_scale: float = typer.Option(1.0, "--noise-scale", help="Scale for random normal noise augmentation"),
     steps_per_epoch: int = typer.Option(250, "--steps-per-epoch", "-spe", help="Number of steps per epoch"),
+    num_particles: int = typer.Option(4, "--num-particles", "-np", help="Number of particles in the target distribution"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
     key = jax.random.PRNGKey(random_seed)
     batch_size = batch_size_multiplier * time_steps
     ts = jnp.linspace(0, 1, time_steps)
-    dim = 8
+    dim = num_particles * 2
 
     initial_distribution = MultivariateGaussian(
         sigma=initial_sigma,
@@ -68,7 +69,7 @@ def main(
     # )
     target_distribution = MultiDoubleWellEnergy(
         dim=dim,
-        n_particles=4,
+        n_particles=num_particles,
     )
 
     annealed_distribution = AnnealedDistribution(
@@ -179,6 +180,7 @@ def main(
             "remove_mean": remove_mean,
             "translation_scale": translation_scale,
             "noise_scale": noise_scale,
+            "num_particles": num_particles,
         }
     )
 
@@ -391,6 +393,7 @@ def main(
     print(f"  Data refresh interval: {data_refresh_interval}")
     print(f"  Random seed: {random_seed}")
     print(f"  Remove mean: {remove_mean}")
+    print(f"  Number of particles: {num_particles}")
     print("Data Augmentation:")
     print(f"  Rotation: {enable_rotation}")
     print(f"  Translation: {enable_translation} (scale: {translation_scale})")

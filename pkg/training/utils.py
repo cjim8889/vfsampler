@@ -79,6 +79,7 @@ def axis_aligned_fourier_modes(
     xmin, xmax = domain_range
     L          = xmax - xmin
     factor     = (2 * jnp.pi if use_2pi else jnp.pi) / L
+    x = jnp.clip(x, xmin, xmax)
 
     # ------------------------------------------------------------------
     # Build the list of axis-aligned wave-vectors  w_k  (M = dim*max_freq)
