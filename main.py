@@ -4,6 +4,7 @@ import time
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 import jmp
 import matplotlib.pyplot as plt
 import optax
@@ -12,16 +13,17 @@ from jaxtyping import PRNGKeyArray
 
 import wandb
 from pkg.distributions.annealing import AnnealedDistribution
-from pkg.distributions.gaussian import MultivariateGaussian, ZeroMeanMultivariateGaussian
+from pkg.distributions.gaussian import MultivariateGaussian
 from pkg.distributions.gmm import GMM
 from pkg.distributions.multi_double_well import MultiDoubleWellEnergy
 from pkg.mcmc.smc import generate_samples_with_smc
 from pkg.nn.mlp import MLPVelocityField
+from pkg.nn.test_function import TrainableTestFunction
 from pkg.nn.transformer import ParticleTransformerV4
 from pkg.ode.integration import generate_samples
+from pkg.training.augmentation import batch_augment_particle_coordinates
 from pkg.training.dt_logZt import estimate_dt_logZt
 from pkg.training.objective import Particle, loss_fn
-from pkg.training.augmentation import batch_augment_particle_coordinates
 
 app = typer.Typer()
 
@@ -48,13 +50,16 @@ def main(
     noise_scale: float = typer.Option(1.0, "--noise-scale", help="Scale for random normal noise augmentation"),
     steps_per_epoch: int = typer.Option(250, "--steps-per-epoch", "-spe", help="Number of steps per epoch"),
     num_particles: int = typer.Option(4, "--num-particles", "-np", help="Number of particles in the target distribution"),
+    alternating_frequency: int = typer.Option(50, "--alternating-frequency", "-af", help="Number of steps to train one component before switching"),
+    test_fn_learning_rate: float = typer.Option(1e-3, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
+    test_fn_l2_reg: float = typer.Option(1e-3, "--test-fn-l2", help="L2 regularization for test function"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
     key = jax.random.PRNGKey(random_seed)
     batch_size = batch_size_multiplier * time_steps
     ts = jnp.linspace(0, 1, time_steps)
-    dim = num_particles * 2
+    dim = 1 * 2
 
     initial_distribution = MultivariateGaussian(
         sigma=initial_sigma,
@@ -67,9 +72,13 @@ def main(
     #     space_dim=2,
     #     sigma=initial_sigma,
     # )
-    target_distribution = MultiDoubleWellEnergy(
+    # target_distribution = MultiDoubleWellEnergy(
+    #     dim=dim,
+    #     n_particles=num_particles,
+    # )
+    target_distribution = GMM(
+        key=key,
         dim=dim,
-        n_particles=num_particles,
     )
 
     annealed_distribution = AnnealedDistribution(
@@ -77,15 +86,17 @@ def main(
         target_density=target_distribution,
     )
 
+    # Create trainable test function
+    key, test_fn_key = jax.random.split(key)
+    test_fn = TrainableTestFunction(
+        key=test_fn_key,
+        in_dim=dim,
+        hidden_dim=hidden_dim // 2,  # Use smaller network for test function
+        depth=2,
+    )
+
     key, subkey = jax.random.split(key)
-    # v_theta = MLPVelocityField(
-    #     key=subkey,
-    #     in_dim=dim,
-    #     out_dim=dim,
-    #     hidden_dim=hidden_dim,
-    #     depth=depth,
-    #     dt=0.01,
-    # )
+
     v_theta = ParticleTransformerV4(
         n_spatial_dim=2,
         hidden_size=hidden_dim,
@@ -136,16 +147,17 @@ def main(
         dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
     )
 
-    loss, raw_epsilons = loss_fn(
+    loss, raw_epsilons, phi_values = loss_fn(
         v_theta=v_theta,
         particles=particles,
         time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
         score_fn=annealed_distribution.score_fn,
-        num_frequencies=num_frequencies,
+        test_fn=test_fn,
     )
 
     # Display initial diagnostics
     print(raw_epsilons)
+    print(phi_values)
     print(f"Initial loss: {loss}")
 
     # ================== WANDB INITIALIZATION ==================
@@ -181,6 +193,9 @@ def main(
             "translation_scale": translation_scale,
             "noise_scale": noise_scale,
             "num_particles": num_particles,
+            "alternating_frequency": alternating_frequency,
+            "test_fn_learning_rate": test_fn_learning_rate,
+            "test_fn_l2_reg": test_fn_l2_reg,
         }
     )
 
@@ -302,34 +317,77 @@ def main(
         return batch_particles
 
     @eqx.filter_jit
-    def training_step(state: "TrainState", opt_state, optimizer, particles: Particle):
-        """Performs a single gradient step updating both the velocity field and
-        the learnable components inside the annealed distribution."""
+    def training_step_v_theta(state: "TrainState", v_theta_opt_state, v_theta_optimizer, particles: Particle):
+        """Training step for velocity field (minimize loss)."""
 
-        def loss_wrapper(model: "TrainState"):
-            ad = model.annealed_distribution
-            vt = model.v_theta
+        def loss_wrapper_v_theta(v_theta):
+            # Create new state with updated v_theta
+            new_state = eqx.tree_at(lambda s: s.v_theta, state, v_theta)
+            ad = new_state.annealed_distribution
+            tf = new_state.test_fn
 
-            loss, _ = loss_fn(
+            loss, _, _ = loss_fn(
+                v_theta=v_theta,
+                particles=particles,
+                time_derivative_log_density=ad.unnormalised_time_derivative,
+                score_fn=ad.score_fn,
+                test_fn=tf,
+            )
+            return loss
+
+        loss, grads = eqx.filter_value_and_grad(loss_wrapper_v_theta)(state.v_theta)
+
+        # Update only v_theta
+        updates, v_theta_opt_state = v_theta_optimizer.update(
+            grads,
+            v_theta_opt_state,
+            eqx.filter(state.v_theta, eqx.is_inexact_array),
+        )
+
+        new_v_theta = eqx.apply_updates(state.v_theta, updates)
+        new_state = eqx.tree_at(lambda s: s.v_theta, state, new_v_theta)
+        
+        return new_state, v_theta_opt_state, loss
+
+    @eqx.filter_jit  
+    def training_step_test_fn(state: "TrainState", test_fn_opt_state, test_fn_optimizer, particles: Particle, l2_reg: float):
+        """Training step for test function (maximize loss + L2 regularization)."""
+
+        def loss_wrapper_test_fn(test_fn):
+            # Create new state with updated test_fn
+            new_state = eqx.tree_at(lambda s: s.test_fn, state, test_fn)
+            ad = new_state.annealed_distribution
+            vt = new_state.v_theta
+
+            # Compute main loss and get phi values for regularization
+            main_loss, raw_epsilons, phi_values = loss_fn(
                 v_theta=vt,
                 particles=particles,
                 time_derivative_log_density=ad.unnormalised_time_derivative,
                 score_fn=ad.score_fn,
-                num_frequencies=num_frequencies,
+                test_fn=test_fn,
             )
-            return loss
+            
+            # L2 regularization on test function outputs (phi values)
+            l2_penalty = jnp.mean(jnp.square(phi_values))
+            
+            # Adversarial objective: maximize main loss, minimize L2 penalty on outputs
+            adversarial_loss = -main_loss + l2_reg * l2_penalty
+            return adversarial_loss, (main_loss, l2_penalty)
 
-        loss, grads = eqx.filter_value_and_grad(loss_wrapper)(state)
+        (adversarial_loss, (main_loss, l2_penalty)), grads = eqx.filter_value_and_grad(loss_wrapper_test_fn, has_aux=True)(state.test_fn)
 
-        # Use Equinox helpers to apply the gradient updates
-        updates, opt_state = optimizer.update(
+        # Update only test_fn
+        updates, test_fn_opt_state = test_fn_optimizer.update(
             grads,
-            opt_state,
-            eqx.filter(state, eqx.is_inexact_array),
+            test_fn_opt_state,
+            eqx.filter(state.test_fn, eqx.is_inexact_array),
         )
 
-        state = eqx.apply_updates(state, updates)
-        return state, opt_state, loss
+        new_test_fn = eqx.apply_updates(state.test_fn, updates)
+        new_state = eqx.tree_at(lambda s: s.test_fn, state, new_test_fn)
+        
+        return new_state, test_fn_opt_state, adversarial_loss, main_loss, l2_penalty
 
     def visualize_generated_samples(state: "TrainState", key, target_distribution, initial_distribution,
                                    ts, num_vis_samples=5000, epoch=0):
@@ -394,6 +452,9 @@ def main(
     print(f"  Random seed: {random_seed}")
     print(f"  Remove mean: {remove_mean}")
     print(f"  Number of particles: {num_particles}")
+    print(f"  Alternating frequency: {alternating_frequency}")
+    print(f"  Test function LR: {test_fn_learning_rate}")
+    print(f"  Test function L2 reg: {test_fn_l2_reg}")
     print("Data Augmentation:")
     print(f"  Rotation: {enable_rotation}")
     print(f"  Translation: {enable_translation} (scale: {translation_scale})")
@@ -415,20 +476,33 @@ def main(
 
         v_theta: MLPVelocityField
         annealed_distribution: AnnealedDistribution
+        test_fn: TrainableTestFunction
 
     # Instantiate the train state
-    train_state = TrainState(v_theta=v_theta, annealed_distribution=annealed_distribution)
+    train_state = TrainState(v_theta=v_theta, annealed_distribution=annealed_distribution, test_fn=test_fn)
 
-    # Setup optimizer (after creating train_state so we can initialise its params)
-    optimizer = optax.adamw(learning_rate, weight_decay=weight_decay)
-    grad_clip = optax.clip_by_global_norm(1.0)
-    zero_nans = optax.zero_nans()
-    optimizer = optax.chain(zero_nans, grad_clip, optimizer)
-    opt_state = optimizer.init(eqx.filter(train_state, eqx.is_inexact_array))
+    # Setup two separate optimizers
+    # Optimizer for velocity field and annealed distribution (minimize loss)
+    v_theta_optimizer = optax.adamw(learning_rate, weight_decay=weight_decay)
+    v_theta_grad_clip = optax.clip_by_global_norm(1.0)
+    v_theta_zero_nans = optax.zero_nans()
+    v_theta_optimizer = optax.chain(v_theta_zero_nans, v_theta_grad_clip, v_theta_optimizer)
+    
+    # Optimizer for test function (adversarial: maximize loss, minimize L2)
+    test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=0.0)  # No weight decay, we use custom L2
+    test_fn_grad_clip = optax.clip_by_global_norm(1.0)
+    test_fn_zero_nans = optax.zero_nans()
+    test_fn_optimizer = optax.chain(test_fn_zero_nans, test_fn_grad_clip, test_fn_optimizer)
+    
+    # Initialize optimizer states
+    v_theta_opt_state = v_theta_optimizer.init(eqx.filter(train_state.v_theta, eqx.is_inexact_array))
+    test_fn_opt_state = test_fn_optimizer.init(eqx.filter(train_state.test_fn, eqx.is_inexact_array))
 
     # Training loop
-    print("Starting training...")
-    print(f"Epochs: {num_epochs}, Learning rate: {learning_rate}, Weight decay: {weight_decay}")
+    print("Starting adversarial training...")
+    print(f"Epochs: {num_epochs}")
+    print(f"V_theta LR: {learning_rate}, Weight decay: {weight_decay}")
+    print(f"Test_fn LR: {test_fn_learning_rate}, L2 reg: {test_fn_l2_reg}")
     print(f"Dataset size: {dataset_size}, Training batch size: {training_batch_size}")
     print(f"Data refresh interval: {data_refresh_interval} epochs")
     print("-" * 60)
@@ -459,11 +533,14 @@ def main(
 
         # ---------------------------------------------
         # NEW: iterate over multiple gradient steps per epoch
+        # Split into two phases: test_fn optimization then v_theta optimization
         # ---------------------------------------------
-        # steps_per_epoch = max(1, full_dataset.xr.shape[0] // training_batch_size)
         epoch_losses = []  # store losses to compute an average per epoch
-
-        for step in range(steps_per_epoch):
+        
+        # Phase 1: Train test function for C steps (alternating_frequency)
+        test_fn_losses = []
+        print(f"Epoch {epoch} - Phase 1: Training test function for {alternating_frequency} steps")
+        for test_step in range(alternating_frequency):
             # Sample a batch from the full dataset for this training step
             key, batch_key = jax.random.split(key)
             batch_particles = sample_batch_from_data(
@@ -478,35 +555,84 @@ def main(
                 noise_scale,
             )
 
-            # Training step
-            train_state, opt_state, current_loss = training_step(
-                train_state, opt_state, optimizer,
-                batch_particles
+            # Train test function (adversarial: maximize loss + L2 reg)
+            train_state, test_fn_opt_state, adversarial_loss, main_loss, l2_penalty = training_step_test_fn(
+                train_state, test_fn_opt_state, test_fn_optimizer, batch_particles, test_fn_l2_reg
+            )
+            
+            test_fn_losses.append(adversarial_loss)
+            epoch_losses.append(adversarial_loss)
+            
+            if test_step % 5 == 0:
+                print(f"  Test_fn Step {test_step} | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | L2 Penalty: {l2_penalty:.6f}")
+            
+            # Log test_fn-specific metrics to wandb
+            wandb.log({
+                "test_fn_adversarial_loss": adversarial_loss,
+                "test_fn_main_loss": main_loss,
+                "test_fn_l2_penalty": l2_penalty,
+                "test_fn_step": test_step,
+                "epoch": epoch,
+                "training_phase": "test_fn",
+            })
+
+        # Phase 2: Train v_theta for remaining steps
+        v_theta_steps = steps_per_epoch - alternating_frequency
+        v_theta_losses = []
+        print(f"Epoch {epoch} - Phase 2: Training v_theta for {v_theta_steps} steps")
+        for v_step in range(v_theta_steps):
+            # Sample a batch from the full dataset for this training step
+            key, batch_key = jax.random.split(key)
+            batch_particles = sample_batch_from_data(
+                batch_key, 
+                full_dataset, 
+                training_batch_size,
+                enable_rotation,
+                enable_translation,
+                enable_noise,
+                remove_mean,
+                translation_scale,
+                noise_scale,
             )
 
-            if step % 10 == 0:
-                print(f"Step {step} | Loss: {current_loss:.6f}")
-                # Log step-level metrics to wandb
-                wandb.log({
-                    "step_loss": current_loss,
-                    "global_step": epoch * steps_per_epoch + step,
-                    "epoch": epoch
-                })
-
-            epoch_losses.append(current_loss)
+            # Train velocity field (minimize loss)
+            train_state, v_theta_opt_state, v_theta_loss = training_step_v_theta(
+                train_state, v_theta_opt_state, v_theta_optimizer, batch_particles
+            )
+            
+            v_theta_losses.append(v_theta_loss)
+            epoch_losses.append(v_theta_loss)
+            
+            if v_step % 10 == 0:
+                print(f"  V_theta Step {v_step} | Loss: {v_theta_loss:.6f}")
+            
+            # Log v_theta-specific metrics to wandb
+            wandb.log({
+                "v_theta_loss": v_theta_loss,
+                "v_theta_step": v_step,
+                "epoch": epoch,
+                "training_phase": "v_theta",
+            })
 
         # Compute average loss over the epoch for logging/early-stopping etc.
         current_loss = jnp.mean(jnp.stack(epoch_losses))
+        avg_test_fn_loss = jnp.mean(jnp.stack(test_fn_losses)) if test_fn_losses else 0.0
+        avg_v_theta_loss = jnp.mean(jnp.stack(v_theta_losses)) if v_theta_losses else 0.0
 
         # Logging
         if epoch % log_interval == 0:
             elapsed_time = time.time() - start_time
-            print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Time: {elapsed_time:.1f}s | Steps: {steps_per_epoch}")
+            print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Test_fn: {avg_test_fn_loss:.6f} | V_theta: {avg_v_theta_loss:.6f} | Time: {elapsed_time:.1f}s")
+            print(f"          | Test_fn steps: {len(test_fn_losses)} | V_theta steps: {len(v_theta_losses)}")
             
             # Log epoch-level metrics to wandb
             wandb.log({
                 "epoch": epoch,
                 "avg_loss": current_loss,
+                "avg_test_fn_loss": avg_test_fn_loss,
+                "avg_v_theta_loss": avg_v_theta_loss,
+                "test_fn_steps": len(test_fn_losses),
+                "v_theta_steps": len(v_theta_losses),
                 "elapsed_time": elapsed_time,
                 "steps_per_epoch": steps_per_epoch,
             })
@@ -549,12 +675,12 @@ def main(
         noise_scale,
     )
 
-    final_loss, _ = loss_fn(
+    final_loss, _, _ = loss_fn(
         v_theta=train_state.v_theta,
         particles=test_particles,
         time_derivative_log_density=train_state.annealed_distribution.unnormalised_time_derivative,
         score_fn=train_state.annealed_distribution.score_fn,
-        num_frequencies=num_frequencies,
+        test_fn=train_state.test_fn,
     )
 
     print("-" * 60)

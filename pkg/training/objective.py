@@ -5,9 +5,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float
 
-from .utils import axis_aligned_fourier_modes, isotropic_gaussian
 from pkg.nn.mlp import MLPVelocityField
-import chex
+
 
 class Particle(eqx.Module):
     x: Float[Array, "dim"]     
@@ -21,9 +20,21 @@ def epsilon(
     particle: Particle,
     score_fn: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
     time_derivative_log_density: Callable[[Float[Array, "dim"], float], float],
-    num_frequencies: int,
-) -> Float[Array, "num_frequencies"]:
-    """Computes the local error using a Particle instance."""
+    test_fn: Callable[[Float[Array, "dim"], float], Tuple[float, Float[Array, "dim"]]],
+) -> Tuple[float, float]:
+    """Computes the local error using a Particle instance.
+    
+    Args:
+        v_theta: Velocity field model
+        particle: Particle containing x, t, dt_logZt
+        score_fn: Score function
+        time_derivative_log_density: Time derivative of log density
+        test_fn: Test function that takes x, t and returns scalar (phi, grad_phi)
+        
+    Returns:
+        residual: The computed residual value
+        phi: The test function value at (x, t)
+    """
     x, t, dt_logZt = particle.x, particle.t, particle.dt_logZt
 
     score = score_fn(x, t)
@@ -32,17 +43,15 @@ def epsilon(
     dt_log_density_unormalised = time_derivative_log_density(x, t)
     dt_log_density = dt_log_density_unormalised - dt_logZt
 
-    # phi, grad_phi = isotropic_gaussian(x)
-    phi, grad_phi = axis_aligned_fourier_modes(x, num_frequencies, domain_range=(-10., 10.0))
-    grad_phi = grad_phi.reshape(-1, x.shape[-1])
+    # Use the provided test function instead of fixed fourier modes
+    phi, grad_phi = test_fn(x, t)
 
-    first_term = phi * dt_log_density # (n_frequencies, )
-    second_term = phi * (jnp.sum(score * v)) # (n_frequencies, )
-    third_term = - jnp.dot(grad_phi, v) # (1, )
+    first_term = phi * dt_log_density  # scalar
+    second_term = phi * (jnp.sum(score * v))  # scalar
+    third_term = - jnp.dot(grad_phi, v)  # scalar
     residual = first_term + second_term + third_term
 
-    # chex.assert_shape(residual, (num_frequencies * 2 * x.shape[0],))
-    return residual
+    return residual, phi
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 
@@ -51,16 +60,30 @@ def loss_fn(
     particles: Particle,
     time_derivative_log_density: Callable[[Float[Array, "dim"], float], float],
     score_fn: Callable[[Float[Array, "dim"], float], Float[Array, "dim"]],
-    num_frequencies: int,
-) -> Tuple[float, Float[Array, "batch"]]:
+    test_fn: Callable[[Float[Array, "dim"], float], Tuple[float, Float[Array, "dim"]]],
+) -> Tuple[float, Float[Array, "batch"], Float[Array, "batch"]]:
+    """Compute loss using the provided test function.
+    
+    Args:
+        v_theta: Velocity field model
+        particles: Batch of particles
+        time_derivative_log_density: Time derivative of log density
+        score_fn: Score function
+        test_fn: Test function that takes x, t and returns scalar (phi, grad_phi)
+        
+    Returns:
+        loss: Mean squared residual
+        raw_epsilons: Raw residual values per particle
+        phi_values: Test function output values per particle
+    """
 
-    raw_epsilons = batched_epsilon(
+    raw_epsilons, phi_values = batched_epsilon(
         v_theta,
         particles,
         score_fn,
         time_derivative_log_density,    
-        num_frequencies,
+        test_fn,
     )
 
     _loss = jnp.mean(raw_epsilons**2)
-    return _loss, raw_epsilons
+    return _loss, raw_epsilons, phi_values
