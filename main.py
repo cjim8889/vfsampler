@@ -18,7 +18,7 @@ from pkg.distributions.gmm import GMM
 from pkg.distributions.multi_double_well import MultiDoubleWellEnergy
 from pkg.mcmc.smc import generate_samples_with_smc
 from pkg.nn.mlp import MLPVelocityField
-from pkg.nn.test_function import TrainableTestFunction
+from pkg.nn.test_function import TrainableTestFunction, FixedTestFunction
 from pkg.nn.transformer import ParticleTransformerV4
 from pkg.ode.integration import generate_samples
 from pkg.training.augmentation import batch_augment_particle_coordinates
@@ -53,6 +53,7 @@ def main(
     alternating_frequency: int = typer.Option(50, "--alternating-frequency", "-af", help="Number of steps to train one component before switching"),
     test_fn_learning_rate: float = typer.Option(1e-3, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
     test_fn_l2_reg: float = typer.Option(1e-3, "--test-fn-l2", help="L2 regularization for test function"),
+    train_test_fn: bool = typer.Option(True, "--train-test-fn", help="Whether to train the test function (if it has trainable parameters)"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
     
@@ -88,12 +89,20 @@ def main(
 
     # Create trainable test function
     key, test_fn_key = jax.random.split(key)
-    test_fn = TrainableTestFunction(
-        key=test_fn_key,
-        in_dim=dim,
-        hidden_dim=hidden_dim // 2,  # Use smaller network for test function
-        depth=2,
+    # test_fn = TrainableTestFunction(
+    #     key=test_fn_key,
+    #     in_dim=dim,
+    #     hidden_dim=hidden_dim // 2,  # Use smaller network for test function
+    #     depth=2,
+    # )
+
+    # Alternative: Use a fixed (non-trainable) test function
+    test_fn = FixedTestFunction(
+        log_prob_fn=annealed_distribution.time_dependent_unnormalised_log_prob,
+        temperatures=[1.0, 5.0, 10.0, 20.0, 100.0, 0.1,],
     )
+    # When using FixedTestFunction, the training loop will automatically
+    # detect that it has no trainable parameters and skip test function optimization
 
     key, subkey = jax.random.split(key)
 
@@ -159,7 +168,6 @@ def main(
     print(raw_epsilons)
     print(phi_values)
     print(f"Initial loss: {loss}")
-
     # ================== WANDB INITIALIZATION ==================
 
     # Initialize wandb for experiment tracking
@@ -196,6 +204,7 @@ def main(
             "alternating_frequency": alternating_frequency,
             "test_fn_learning_rate": test_fn_learning_rate,
             "test_fn_l2_reg": test_fn_l2_reg,
+            "train_test_fn": train_test_fn,
         }
     )
 
@@ -212,6 +221,11 @@ def main(
     wandb.log({"initial_smc_samples": wandb.Image("smc_samples.png")})
 
     # ================== TRAINING BOILERPLATE ==================
+
+    def is_test_fn_trainable(test_fn):
+        """Check if the test function has any trainable parameters."""
+        trainable_params = eqx.filter(test_fn, eqx.is_inexact_array)
+        return jtu.tree_leaves(trainable_params) != []
 
     def generate_training_data(
         key: PRNGKeyArray, 
@@ -440,6 +454,10 @@ def main(
     log_interval = 1
     training_batch_size = batch_size
 
+    # Check if test function training is possible and enabled
+    test_fn_is_trainable = is_test_fn_trainable(test_fn)
+    test_fn_training_enabled = train_test_fn and test_fn_is_trainable
+
     print("Training Configuration:")
     print(f"  Batch size: {batch_size} (multiplier: {batch_size_multiplier})")
     print(f"  Initial distribution sigma: {initial_sigma}")
@@ -455,6 +473,8 @@ def main(
     print(f"  Alternating frequency: {alternating_frequency}")
     print(f"  Test function LR: {test_fn_learning_rate}")
     print(f"  Test function L2 reg: {test_fn_l2_reg}")
+    print(f"  Test function trainable: {test_fn_is_trainable}")
+    print(f"  Test function training enabled: {test_fn_training_enabled}")
     print("Data Augmentation:")
     print(f"  Rotation: {enable_rotation}")
     print(f"  Translation: {enable_translation} (scale: {translation_scale})")
@@ -489,20 +509,30 @@ def main(
     v_theta_optimizer = optax.chain(v_theta_zero_nans, v_theta_grad_clip, v_theta_optimizer)
     
     # Optimizer for test function (adversarial: maximize loss, minimize L2)
-    test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=0.0)  # No weight decay, we use custom L2
-    test_fn_grad_clip = optax.clip_by_global_norm(1.0)
-    test_fn_zero_nans = optax.zero_nans()
-    test_fn_optimizer = optax.chain(test_fn_zero_nans, test_fn_grad_clip, test_fn_optimizer)
+    # Only create if test function training is enabled
+    if test_fn_training_enabled:
+        test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=0.0)  # No weight decay, we use custom L2
+        test_fn_grad_clip = optax.clip_by_global_norm(1.0)
+        test_fn_zero_nans = optax.zero_nans()
+        test_fn_optimizer = optax.chain(test_fn_zero_nans, test_fn_grad_clip, test_fn_optimizer)
+        
+        # Initialize test function optimizer state
+        test_fn_opt_state = test_fn_optimizer.init(eqx.filter(train_state.test_fn, eqx.is_inexact_array))
+    else:
+        test_fn_optimizer = None
+        test_fn_opt_state = None
     
-    # Initialize optimizer states
+    # Initialize v_theta optimizer state
     v_theta_opt_state = v_theta_optimizer.init(eqx.filter(train_state.v_theta, eqx.is_inexact_array))
-    test_fn_opt_state = test_fn_optimizer.init(eqx.filter(train_state.test_fn, eqx.is_inexact_array))
 
     # Training loop
     print("Starting adversarial training...")
     print(f"Epochs: {num_epochs}")
     print(f"V_theta LR: {learning_rate}, Weight decay: {weight_decay}")
-    print(f"Test_fn LR: {test_fn_learning_rate}, L2 reg: {test_fn_l2_reg}")
+    if test_fn_training_enabled:
+        print(f"Test_fn LR: {test_fn_learning_rate}, L2 reg: {test_fn_l2_reg}")
+    else:
+        print("Test function training: DISABLED (not trainable or disabled by user)")
     print(f"Dataset size: {dataset_size}, Training batch size: {training_batch_size}")
     print(f"Data refresh interval: {data_refresh_interval} epochs")
     print("-" * 60)
@@ -537,47 +567,50 @@ def main(
         # ---------------------------------------------
         epoch_losses = []  # store losses to compute an average per epoch
         
-        # Phase 1: Train test function for C steps (alternating_frequency)
+        # Phase 1: Train test function for C steps (alternating_frequency) - only if enabled
         test_fn_losses = []
-        print(f"Epoch {epoch} - Phase 1: Training test function for {alternating_frequency} steps")
-        for test_step in range(alternating_frequency):
-            # Sample a batch from the full dataset for this training step
-            key, batch_key = jax.random.split(key)
-            batch_particles = sample_batch_from_data(
-                batch_key, 
-                full_dataset, 
-                training_batch_size,
-                enable_rotation,
-                enable_translation,
-                enable_noise,
-                remove_mean,
-                translation_scale,
-                noise_scale,
-            )
+        if test_fn_training_enabled:
+            print(f"Epoch {epoch} - Phase 1: Training test function for {alternating_frequency} steps")
+            for test_step in range(alternating_frequency):
+                # Sample a batch from the full dataset for this training step
+                key, batch_key = jax.random.split(key)
+                batch_particles = sample_batch_from_data(
+                    batch_key, 
+                    full_dataset, 
+                    training_batch_size,
+                    enable_rotation,
+                    enable_translation,
+                    enable_noise,
+                    remove_mean,
+                    translation_scale,
+                    noise_scale,
+                )
 
-            # Train test function (adversarial: maximize loss + L2 reg)
-            train_state, test_fn_opt_state, adversarial_loss, main_loss, l2_penalty = training_step_test_fn(
-                train_state, test_fn_opt_state, test_fn_optimizer, batch_particles, test_fn_l2_reg
-            )
-            
-            test_fn_losses.append(adversarial_loss)
-            epoch_losses.append(adversarial_loss)
-            
-            if test_step % 5 == 0:
-                print(f"  Test_fn Step {test_step} | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | L2 Penalty: {l2_penalty:.6f}")
-            
-            # Log test_fn-specific metrics to wandb
-            wandb.log({
-                "test_fn_adversarial_loss": adversarial_loss,
-                "test_fn_main_loss": main_loss,
-                "test_fn_l2_penalty": l2_penalty,
-                "test_fn_step": test_step,
-                "epoch": epoch,
-                "training_phase": "test_fn",
-            })
+                # Train test function (adversarial: maximize loss + L2 reg)
+                train_state, test_fn_opt_state, adversarial_loss, main_loss, l2_penalty = training_step_test_fn(
+                    train_state, test_fn_opt_state, test_fn_optimizer, batch_particles, test_fn_l2_reg
+                )
+                
+                test_fn_losses.append(adversarial_loss)
+                epoch_losses.append(adversarial_loss)
+                
+                if test_step % 5 == 0:
+                    print(f"  Test_fn Step {test_step} | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | L2 Penalty: {l2_penalty:.6f}")
+                
+                # Log test_fn-specific metrics to wandb
+                wandb.log({
+                    "test_fn_adversarial_loss": adversarial_loss,
+                    "test_fn_main_loss": main_loss,
+                    "test_fn_l2_penalty": l2_penalty,
+                    "test_fn_step": test_step,
+                    "epoch": epoch,
+                    "training_phase": "test_fn",
+                })
+        else:
+            print(f"Epoch {epoch} - Phase 1: Skipping test function training (disabled)")
 
-        # Phase 2: Train v_theta for remaining steps
-        v_theta_steps = steps_per_epoch - alternating_frequency
+        # Phase 2: Train v_theta for remaining steps (or all steps if test_fn disabled)
+        v_theta_steps = steps_per_epoch - (alternating_frequency if test_fn_training_enabled else 0)
         v_theta_losses = []
         print(f"Epoch {epoch} - Phase 2: Training v_theta for {v_theta_steps} steps")
         for v_step in range(v_theta_steps):
@@ -622,20 +655,32 @@ def main(
         # Logging
         if epoch % log_interval == 0:
             elapsed_time = time.time() - start_time
-            print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Test_fn: {avg_test_fn_loss:.6f} | V_theta: {avg_v_theta_loss:.6f} | Time: {elapsed_time:.1f}s")
-            print(f"          | Test_fn steps: {len(test_fn_losses)} | V_theta steps: {len(v_theta_losses)}")
+            if test_fn_training_enabled:
+                print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Test_fn: {avg_test_fn_loss:.6f} | V_theta: {avg_v_theta_loss:.6f} | Time: {elapsed_time:.1f}s")
+                print(f"          | Test_fn steps: {len(test_fn_losses)} | V_theta steps: {len(v_theta_losses)}")
+            else:
+                print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | V_theta: {avg_v_theta_loss:.6f} | Time: {elapsed_time:.1f}s")
+                print(f"          | V_theta steps: {len(v_theta_losses)} (Test_fn training disabled)")
             
             # Log epoch-level metrics to wandb
-            wandb.log({
+            wandb_metrics = {
                 "epoch": epoch,
                 "avg_loss": current_loss,
-                "avg_test_fn_loss": avg_test_fn_loss,
                 "avg_v_theta_loss": avg_v_theta_loss,
-                "test_fn_steps": len(test_fn_losses),
                 "v_theta_steps": len(v_theta_losses),
                 "elapsed_time": elapsed_time,
                 "steps_per_epoch": steps_per_epoch,
-            })
+                "test_fn_training_enabled": test_fn_training_enabled,
+            }
+            
+            # Only log test function metrics if training is enabled
+            if test_fn_training_enabled:
+                wandb_metrics.update({
+                    "avg_test_fn_loss": avg_test_fn_loss,
+                    "test_fn_steps": len(test_fn_losses),
+                })
+            
+            wandb.log(wandb_metrics)
             
             if current_loss < best_loss:
                 best_loss = current_loss
