@@ -45,7 +45,7 @@ class TrainableTestFunction(eqx.Module):
         # Compute phi value (scalar)
         phi = self.phi_network(x, t)[0]  # Extract scalar from shape (1,)
         
-        return phi * (1 - t)
+        return phi
 
 
 class FixedTestFunction(eqx.Module):
