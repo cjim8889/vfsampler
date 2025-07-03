@@ -98,8 +98,8 @@ def loss_fn_expectation_form(
     """Computes the loss using the expectation form of the test function."""
 
     LHS, grad_norm_xt  = batched_LHS_expectation_form(v_theta, particles.x, particles.t, test_fn)
-    RHS = RHS_expectation_form(particles.x_0, test_fn)
-    return jnp.mean(LHS) + RHS, grad_norm_xt 
+    # RHS = RHS_expectation_form(particles.x_0, test_fn)
+    return jnp.mean(LHS), grad_norm_xt 
 
 def loss_fn(
     v_theta: MLPVelocityField,  
