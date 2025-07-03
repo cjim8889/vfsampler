@@ -52,7 +52,7 @@ def main(
     num_particles: int = typer.Option(4, "--num-particles", "-np", help="Number of particles in the target distribution"),
     alternating_frequency: int = typer.Option(50, "--alternating-frequency", "-af", help="Number of steps to train one component before switching"),
     test_fn_learning_rate: float = typer.Option(1e-4, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
-    test_fn_l2_reg: float = typer.Option(5.0, "--test-fn-l2", help="L2 regularization for test function"),
+    test_fn_l2_reg: float = typer.Option(5.0, "--test-fn-l2", help="Sobolev regularization weight for test function"),
     train_test_fn: bool = typer.Option(True, "--train-test-fn", help="Whether to train the test function (if it has trainable parameters)"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
@@ -60,7 +60,7 @@ def main(
     key = jax.random.PRNGKey(random_seed)
     batch_size = batch_size_multiplier * time_steps
     ts = jnp.linspace(0, 1, time_steps)
-    dim = num_particles * 2
+    dim = 1 * 2
 
     initial_distribution = MultivariateGaussian(
         sigma=initial_sigma,
@@ -73,14 +73,14 @@ def main(
     #     space_dim=2,
     #     sigma=initial_sigma,
     # )
-    target_distribution = MultiDoubleWellEnergy(
-        dim=dim,
-        n_particles=num_particles,
-    )
-    # target_distribution = GMM(
-    #     key=key,
+    # target_distribution = MultiDoubleWellEnergy(
     #     dim=dim,
+    #     n_particles=num_particles,
     # )
+    target_distribution = GMM(
+        key=key,
+        dim=dim,
+    )
 
     annealed_distribution = AnnealedDistribution(
         initial_density=initial_distribution,
@@ -104,19 +104,28 @@ def main(
     # When using FixedTestFunction, the training loop will automatically
     # detect that it has no trainable parameters and skip test function optimization
 
-    key, subkey = jax.random.split(key)
+    # key, subkey = jax.random.split(key)
 
-    v_theta = ParticleTransformerV4(
-        n_spatial_dim=2,
-        hidden_size=hidden_dim,
-        num_layers=depth,
-        num_heads=4,
+    # v_theta = ParticleTransformerV4(
+    #     n_spatial_dim=2,
+    #     hidden_size=hidden_dim,
+    #     num_layers=depth,
+    #     num_heads=4,
+    #     key=subkey,
+    #     mp_policy=jmp.Policy(
+    #         param_dtype=jnp.float32,
+    #         compute_dtype=jnp.float32,
+    #         output_dtype=jnp.float32,
+    #     )
+    # )
+
+    key, subkey = jax.random.split(key)
+    v_theta = MLPVelocityField(
         key=subkey,
-        mp_policy=jmp.Policy(
-            param_dtype=jnp.float32,
-            compute_dtype=jnp.float32,
-            output_dtype=jnp.float32,
-        )
+        in_dim=dim,
+        out_dim=dim,
+        hidden_dim=hidden_dim,
+        depth=depth,
     )
 
     # initial x
@@ -360,7 +369,7 @@ def main(
 
     @eqx.filter_jit  
     def training_step_test_fn(state: "TrainState", test_fn_opt_state, test_fn_optimizer, particles: Particle, l2_reg: float):
-        """Training step for test function (maximize loss + L2 regularization)."""
+        """Training step for test function (maximize loss + Sobolev regularization)."""
 
         def loss_wrapper_test_fn(test_fn):
             # Create new state with updated test_fn
@@ -368,8 +377,8 @@ def main(
             ad = new_state.annealed_distribution
             vt = new_state.v_theta
 
-            # Compute main loss and get phi values for regularization
-            main_loss, _, phi_values = loss_fn(
+            # Compute main loss and get Sobolev penalties for regularization
+            main_loss, _, sobolev_penalties = loss_fn(
                 v_theta=vt,
                 particles=particles,
                 time_derivative_log_density=ad.unnormalised_time_derivative,
@@ -377,14 +386,15 @@ def main(
                 test_fn=test_fn,
             )
             
-            # L2 regularization on test function outputs (phi values)
-            l2_penalty = jnp.mean(phi_values)
+            # Sobolev regularization: penalize large gradients and function values
+            # sobolev_penalties contains ||∇φ||² + φ² for each particle
+            sobolev_penalty = jnp.mean(sobolev_penalties)
             
-            # Adversarial objective: maximize main loss, minimize L2 penalty on outputs
-            adversarial_loss = -main_loss + l2_reg * l2_penalty
-            return adversarial_loss, (main_loss, l2_penalty)
+            # Adversarial objective: maximize main loss, minimize Sobolev penalty
+            adversarial_loss = -main_loss + l2_reg * sobolev_penalty
+            return adversarial_loss, (main_loss, sobolev_penalty)
 
-        (adversarial_loss, (main_loss, l2_penalty)), grads = eqx.filter_value_and_grad(loss_wrapper_test_fn, has_aux=True)(state.test_fn)
+        (adversarial_loss, (main_loss, sobolev_penalty)), grads = eqx.filter_value_and_grad(loss_wrapper_test_fn, has_aux=True)(state.test_fn)
 
         # Update only test_fn
         updates, test_fn_opt_state = test_fn_optimizer.update(
@@ -396,7 +406,7 @@ def main(
         new_test_fn = eqx.apply_updates(state.test_fn, updates)
         new_state = eqx.tree_at(lambda s: s.test_fn, state, new_test_fn)
         
-        return new_state, test_fn_opt_state, adversarial_loss, main_loss, l2_penalty
+        return new_state, test_fn_opt_state, adversarial_loss, main_loss, sobolev_penalty
 
     def visualize_generated_samples(state: "TrainState", key, target_distribution, initial_distribution,
                                    ts, num_vis_samples=5000, epoch=0):
@@ -467,7 +477,7 @@ def main(
     print(f"  Number of particles: {num_particles}")
     print(f"  Alternating frequency: {alternating_frequency}")
     print(f"  Test function LR: {test_fn_learning_rate}")
-    print(f"  Test function L2 reg: {test_fn_l2_reg}")
+    print(f"  Test function Sobolev reg: {test_fn_l2_reg}")
     print(f"  Test function trainable: {test_fn_is_trainable}")
     print(f"  Test function training enabled: {test_fn_training_enabled}")
     print("Data Augmentation:")
@@ -503,10 +513,10 @@ def main(
     v_theta_zero_nans = optax.zero_nans()
     v_theta_optimizer = optax.chain(v_theta_zero_nans, v_theta_grad_clip, v_theta_optimizer)
     
-    # Optimizer for test function (adversarial: maximize loss, minimize L2)
+    # Optimizer for test function (adversarial: maximize loss, minimize Sobolev penalty)
     # Only create if test function training is enabled
     if test_fn_training_enabled:
-        test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=1e-4)  # No weight decay, we use custom L2
+        test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=1e-4)  # Low weight decay, we use custom Sobolev reg
         test_fn_grad_clip = optax.clip_by_global_norm(1.0)
         test_fn_zero_nans = optax.zero_nans()
         test_fn_optimizer = optax.chain(test_fn_zero_nans, test_fn_grad_clip, test_fn_optimizer)
@@ -525,7 +535,7 @@ def main(
     print(f"Epochs: {num_epochs}")
     print(f"V_theta LR: {learning_rate}, Weight decay: {weight_decay}")
     if test_fn_training_enabled:
-        print(f"Test_fn LR: {test_fn_learning_rate}, L2 reg: {test_fn_l2_reg}")
+        print(f"Test_fn LR: {test_fn_learning_rate}, Sobolev reg: {test_fn_l2_reg}")
     else:
         print("Test function training: DISABLED (not trainable or disabled by user)")
     print(f"Dataset size: {dataset_size}, Training batch size: {training_batch_size}")
@@ -581,8 +591,8 @@ def main(
                     noise_scale,
                 )
 
-                # Train test function (adversarial: maximize loss + L2 reg)
-                train_state, test_fn_opt_state, adversarial_loss, main_loss, l2_penalty = training_step_test_fn(
+                # Train test function (adversarial: maximize loss + Sobolev reg)
+                train_state, test_fn_opt_state, adversarial_loss, main_loss, sobolev_penalty = training_step_test_fn(
                     train_state, test_fn_opt_state, test_fn_optimizer, batch_particles, test_fn_l2_reg
                 )
                 
@@ -590,13 +600,13 @@ def main(
                 epoch_losses.append(adversarial_loss)
                 
                 if test_step % 5 == 0:
-                    print(f"  Test_fn Step {test_step} | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | L2 Penalty: {l2_penalty:.6f}")
+                    print(f"  Test_fn Step {test_step} | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | Sobolev Penalty: {sobolev_penalty:.6f}")
                 
                 # Log test_fn-specific metrics to wandb
                 wandb.log({
                     "test_fn_adversarial_loss": adversarial_loss,
                     "test_fn_main_loss": main_loss,
-                    "test_fn_l2_penalty": l2_penalty,
+                    "test_fn_sobolev_penalty": sobolev_penalty,
                     "test_fn_step": test_step,
                     "epoch": epoch,
                     "training_phase": "test_fn",
