@@ -143,31 +143,28 @@ def main(
     plt.savefig("smc_samples.png", dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    dt_logZt = estimate_dt_logZt(
-        xs=xs,
-        weights=weights,
-        ts=ts,
-        time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
-    )
+    # dt_logZt = estimate_dt_logZt(
+    #     xs=xs,
+    #     weights=weights,
+    #     ts=ts,
+    #     time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
+    # )
 
-    particles = Particle(
-        x=xs.reshape(-1, dim),
-        t=jnp.repeat(ts, xs.shape[1]),
-        dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
-    )
+    # particles = Particle(
+    #     x=xs.reshape(-1, dim),
+    #     t=jnp.repeat(ts, xs.shape[1]),
+    #     dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
+    # )
 
-    loss, raw_epsilons, phi_values = loss_fn(
-        v_theta=v_theta,
-        particles=particles,
-        time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
-        score_fn=annealed_distribution.score_fn,
-        test_fn=test_fn,
-    )
+    # loss, raw_epsilons, phi_values = loss_fn(
+    #     v_theta=v_theta,
+    #     particles=particles,
+    #     time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
+    #     score_fn=annealed_distribution.score_fn,
+    #     test_fn=test_fn,
+    # )
 
     # Display initial diagnostics
-    print(raw_epsilons)
-    print(phi_values)
-    print(f"Initial loss: {loss}")
     # ================== WANDB INITIALIZATION ==================
 
     # Initialize wandb for experiment tracking
