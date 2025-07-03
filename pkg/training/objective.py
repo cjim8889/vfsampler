@@ -45,11 +45,15 @@ def epsilon(
 
     # Use the provided test function instead of fixed fourier modes
     phi, grad_phi = test_fn(x, t)
+    grad_phi = grad_phi.reshape(-1, x.shape[0])
 
     first_term = phi * dt_log_density  # scalar
     second_term = phi * (jnp.sum(score * v))  # scalar
     third_term = - jnp.dot(grad_phi, v)  # scalar
     residual = first_term + second_term + third_term
+
+    print(f"Shape of grad_phi: {grad_phi.shape}")
+    print(f"Shape of phi: {phi.shape}")
 
     return residual, phi
 
