@@ -55,7 +55,7 @@ def epsilon(
     print(f"Shape of grad_phi: {grad_phi.shape}")
     print(f"Shape of phi: {phi.shape}")
 
-    return residual, phi
+    return residual, (grad_phi**2).mean() 
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 

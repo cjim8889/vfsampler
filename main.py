@@ -51,8 +51,8 @@ def main(
     steps_per_epoch: int = typer.Option(250, "--steps-per-epoch", "-spe", help="Number of steps per epoch"),
     num_particles: int = typer.Option(4, "--num-particles", "-np", help="Number of particles in the target distribution"),
     alternating_frequency: int = typer.Option(50, "--alternating-frequency", "-af", help="Number of steps to train one component before switching"),
-    test_fn_learning_rate: float = typer.Option(1e-3, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
-    test_fn_l2_reg: float = typer.Option(1e-3, "--test-fn-l2", help="L2 regularization for test function"),
+    test_fn_learning_rate: float = typer.Option(1e-4, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
+    test_fn_l2_reg: float = typer.Option(5.0, "--test-fn-l2", help="L2 regularization for test function"),
     train_test_fn: bool = typer.Option(True, "--train-test-fn", help="Whether to train the test function (if it has trainable parameters)"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
@@ -89,18 +89,18 @@ def main(
 
     # Create trainable test function
     key, test_fn_key = jax.random.split(key)
-    # test_fn = TrainableTestFunction(
-    #     key=test_fn_key,
-    #     in_dim=dim,
-    #     hidden_dim=hidden_dim // 2,  # Use smaller network for test function
-    #     depth=2,
-    # )
+    test_fn = TrainableTestFunction(
+        key=test_fn_key,
+        in_dim=dim,
+        hidden_dim=hidden_dim,
+        depth=3,
+    )
 
     # Alternative: Use a fixed (non-trainable) test function
-    test_fn = FixedTestFunction(
-        log_prob_fn=annealed_distribution.time_dependent_unnormalised_log_prob,
-        temperatures=[1.0, 5.0, 10.0, 20.0, 100.0, 0.1,],
-    )
+    # test_fn = FixedTestFunction(
+    #     log_prob_fn=annealed_distribution.time_dependent_unnormalised_log_prob,
+    #     temperatures=[1.0, 5.0, 10.0, 20.0, 100.0, 0.1,],
+    # )
     # When using FixedTestFunction, the training loop will automatically
     # detect that it has no trainable parameters and skip test function optimization
 
