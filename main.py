@@ -73,14 +73,14 @@ def main(
     #     space_dim=2,
     #     sigma=initial_sigma,
     # )
-    # target_distribution = MultiDoubleWellEnergy(
-    #     dim=dim,
-    #     n_particles=num_particles,
-    # )
-    target_distribution = GMM(
-        key=key,
+    target_distribution = MultiDoubleWellEnergy(
         dim=dim,
+        n_particles=num_particles,
     )
+    # target_distribution = GMM(
+    #     key=key,
+    #     dim=dim,
+    # )
 
     annealed_distribution = AnnealedDistribution(
         initial_density=initial_distribution,
