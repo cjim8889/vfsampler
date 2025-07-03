@@ -93,7 +93,7 @@ def main(
         key=test_fn_key,
         in_dim=dim,
         hidden_dim=hidden_dim,
-        depth=3,
+        depth=depth,
     )
 
     # Alternative: Use a fixed (non-trainable) test function
@@ -383,7 +383,7 @@ def main(
             )
             
             # L2 regularization on test function outputs (phi values)
-            l2_penalty = jnp.mean(jnp.square(phi_values))
+            l2_penalty = jnp.mean(phi_values)
             
             # Adversarial objective: maximize main loss, minimize L2 penalty on outputs
             adversarial_loss = -main_loss + l2_reg * l2_penalty

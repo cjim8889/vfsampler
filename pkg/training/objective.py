@@ -47,6 +47,7 @@ def epsilon(
     phi, grad_phi = test_fn(x, t)
     grad_phi = grad_phi.reshape(-1, x.shape[0])
 
+
     first_term = phi * dt_log_density  # scalar
     second_term = phi * (jnp.sum(score * v))  # scalar
     third_term = - jnp.dot(grad_phi, v)  # scalar
@@ -55,7 +56,7 @@ def epsilon(
     print(f"Shape of grad_phi: {grad_phi.shape}")
     print(f"Shape of phi: {phi.shape}")
 
-    return residual, (grad_phi**2).mean() 
+    return residual, jnp.mean(grad_phi ** 2, axis=1)
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 

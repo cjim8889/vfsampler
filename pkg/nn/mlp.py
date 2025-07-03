@@ -59,7 +59,7 @@ class MLPVelocityField(eqx.Module):
                 [
                     eqx.nn.Linear(hidden_dim, hidden_dim, key=k),
                     eqx.nn.LayerNorm(hidden_dim),
-                    eqx.nn.Lambda(jax.nn.gelu),
+                    eqx.nn.Lambda(jax.nn.silu),
                 ]
             )
             for k in jax.random.split(keys[1], depth)
