@@ -45,15 +45,18 @@ def epsilon(
 
     # Use the provided test function instead of fixed fourier modes
     phi = test_fn(x, t)
-    grad_phi = jax.grad(lambda x: test_fn(x, t))(x).reshape(-1, x.shape[0])
-
+    # Fix gradient computation - no reshape needed, gradient should be 1D vector
+    grad_phi = jax.grad(lambda x: test_fn(x, t))(x)
 
     first_term = phi * dt_log_density  # scalar
     second_term = phi * (jnp.sum(score * v))  # scalar
     third_term = - jnp.dot(grad_phi, v)  # scalar
     residual = first_term + second_term + third_term
 
-    return residual, jnp.mean(grad_phi ** 2, axis=1) + phi ** 2
+    # Fix Sobolev penalty: proper L2 norm of gradient + function value squared
+    sobolev_penalty = jnp.sum(grad_phi ** 2) + phi ** 2
+
+    return residual, sobolev_penalty
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 
