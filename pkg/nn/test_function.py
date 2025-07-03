@@ -94,15 +94,16 @@ class FixedTestFunction(eqx.Module):
         # Compute base log probability once
         log_prob = self.log_prob_fn(x, t)
         
-        # Compute phi for each temperature
-        phi_values = jnp.array([log_prob / temp for temp in self.temperatures])
+        # Convert temperatures to JAX array and compute phi values using vectorization
+        temperatures_array = jnp.array(self.temperatures)
+        phi_values = log_prob / temperatures_array
         
-        # Compute gradients for each temperature
+        # Compute gradients for each temperature using vmap
         def compute_grad_for_temp(temp):
             def phi_fn(x_):
                 return self.log_prob_fn(x_, t) / temp
             return jax.grad(phi_fn)(x)
         
-        grad_phi_values = jnp.stack([compute_grad_for_temp(temp) for temp in self.temperatures])
+        grad_phi_values = jax.vmap(compute_grad_for_temp)(temperatures_array)
         
         return phi_values, grad_phi_values
