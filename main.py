@@ -207,8 +207,6 @@ def main(
 
     # Log initial metrics
     wandb.log({
-        "initial_loss": loss,
-        "initial_raw_epsilons": raw_epsilons.mean(),
         "initial_ess_mean": ess.mean(),
         "initial_ess_min": ess.min(),
         "initial_ess_final": ess[-1],  # ESS at final time step
