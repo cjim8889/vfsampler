@@ -60,7 +60,7 @@ def main(
     key = jax.random.PRNGKey(random_seed)
     batch_size = batch_size_multiplier * time_steps
     ts = jnp.linspace(0, 1, time_steps)
-    dim = 1 * 2
+    dim = num_particles * 2
 
     initial_distribution = MultivariateGaussian(
         sigma=initial_sigma,
