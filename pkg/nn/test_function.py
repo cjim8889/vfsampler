@@ -45,13 +45,7 @@ class TrainableTestFunction(eqx.Module):
         # Compute phi value (scalar)
         phi = self.phi_network(x, t)[0]  # Extract scalar from shape (1,)
         
-        # Compute gradient with respect to x
-        def phi_fn(x_):
-            return self.phi_network(x_, t)[0]
-        
-        grad_phi = jax.grad(phi_fn)(x)
-        
-        return phi, grad_phi
+        return phi * (1 - t)
 
 
 class FixedTestFunction(eqx.Module):

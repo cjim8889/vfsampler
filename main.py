@@ -23,7 +23,7 @@ from pkg.nn.transformer import ParticleTransformerV4
 from pkg.ode.integration import generate_samples
 from pkg.training.augmentation import batch_augment_particle_coordinates
 from pkg.training.dt_logZt import estimate_dt_logZt
-from pkg.training.objective import Particle, loss_fn
+from pkg.training.objective import Particle, loss_fn, loss_fn_expectation_form
 
 app = typer.Typer()
 
@@ -143,31 +143,30 @@ def main(
     plt.savefig("smc_samples.png", dpi=150, bbox_inches='tight')
     plt.close(fig)
 
-    dt_logZt = estimate_dt_logZt(
-        xs=xs,
-        weights=weights,
-        ts=ts,
-        time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
-    )
+    # dt_logZt = estimate_dt_logZt(
+    #     xs=xs,
+    #     weights=weights,
+    #     ts=ts,
+    #     time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
+    # )
 
     particles = Particle(
         x=xs.reshape(-1, dim),
+        x_0=xs[0, :],
         t=jnp.repeat(ts, xs.shape[1]),
-        dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
+        # dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
     )
 
-    loss, raw_epsilons, phi_values = loss_fn(
+    loss, grad_norm_xt = loss_fn_expectation_form(
         v_theta=v_theta,
         particles=particles,
-        time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
-        score_fn=annealed_distribution.score_fn,
         test_fn=test_fn,
     )
 
     # Display initial diagnostics
-    print(raw_epsilons)
-    print(phi_values)
+    print(grad_norm_xt)
     print(f"Initial loss: {loss}")
+
     # ================== WANDB INITIALIZATION ==================
 
     # Initialize wandb for experiment tracking
@@ -211,7 +210,7 @@ def main(
     # Log initial metrics
     wandb.log({
         "initial_loss": loss,
-        "initial_raw_epsilons": raw_epsilons.mean(),
+        "initial_grad_norm_xt": grad_norm_xt.mean(),
         "initial_ess_mean": ess.mean(),
         "initial_ess_min": ess.min(),
         "initial_ess_final": ess[-1],  # ESS at final time step
@@ -254,12 +253,12 @@ def main(
         xs = smc_samples["positions"]
         weights = smc_samples["weights"]
         
-        dt_logZt = estimate_dt_logZt(
-            xs=xs,
-            weights=weights,
-            ts=ts,
-            time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
-        )
+        # dt_logZt = estimate_dt_logZt(
+        #     xs=xs,
+        #     weights=weights,
+        #     ts=ts,
+        #     time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
+        # )
         
         # Return all particles (flattened across time and trajectory dimensions)
         time_steps, num_particles, dim = xs.shape
@@ -268,7 +267,8 @@ def main(
         particles = Particle(
             x=all_particles_flat,
             t=jnp.repeat(ts, num_particles),
-            dt_logZt=jnp.repeat(dt_logZt, num_particles),
+            x_0=xs[0, :],
+            # dt_logZt=jnp.repeat(dt_logZt, num_particles),
         )
         
         return particles
@@ -297,7 +297,6 @@ def main(
         
         batch_x = particles.x[batch_indices]
         batch_t = particles.t[batch_indices]
-        batch_dt_logZt = particles.dt_logZt[batch_indices]
         
         # Apply data augmentation if any augmentation is enabled
         if enable_rotation or enable_translation or enable_noise:
@@ -325,7 +324,8 @@ def main(
         batch_particles = Particle(
             x=batch_x,
             t=batch_t,
-            dt_logZt=batch_dt_logZt,
+            x_0=particles.x_0,
+            # dt_logZt=batch_dt_logZt,
         )
         
         return batch_particles
@@ -337,14 +337,11 @@ def main(
         def loss_wrapper_v_theta(v_theta):
             # Create new state with updated v_theta
             new_state = eqx.tree_at(lambda s: s.v_theta, state, v_theta)
-            ad = new_state.annealed_distribution
             tf = new_state.test_fn
 
-            loss, _, _ = loss_fn(
+            loss, _ = loss_fn_expectation_form(
                 v_theta=v_theta,
                 particles=particles,
-                time_derivative_log_density=ad.unnormalised_time_derivative,
-                score_fn=ad.score_fn,
                 test_fn=tf,
             )
             return loss
@@ -370,20 +367,16 @@ def main(
         def loss_wrapper_test_fn(test_fn):
             # Create new state with updated test_fn
             new_state = eqx.tree_at(lambda s: s.test_fn, state, test_fn)
-            ad = new_state.annealed_distribution
-            vt = new_state.v_theta
 
             # Compute main loss and get phi values for regularization
-            main_loss, raw_epsilons, phi_values = loss_fn(
-                v_theta=vt,
+            main_loss, grad_norm_xt = loss_fn_expectation_form(
+                v_theta=new_state.v_theta,
                 particles=particles,
-                time_derivative_log_density=ad.unnormalised_time_derivative,
-                score_fn=ad.score_fn,
                 test_fn=test_fn,
             )
-            
+
             # L2 regularization on test function outputs (phi values)
-            l2_penalty = jnp.mean(phi_values)
+            l2_penalty = jnp.mean((grad_norm_xt - 1) ** 2)
             
             # Adversarial objective: maximize main loss, minimize L2 penalty on outputs
             adversarial_loss = -main_loss + l2_reg * l2_penalty
@@ -720,7 +713,7 @@ def main(
         noise_scale,
     )
 
-    final_loss, _, _ = loss_fn(
+    final_loss, grad_norm_xt = loss_fn_expectation_form(
         v_theta=train_state.v_theta,
         particles=test_particles,
         time_derivative_log_density=train_state.annealed_distribution.unnormalised_time_derivative,

@@ -9,9 +9,10 @@ from pkg.nn.mlp import MLPVelocityField
 
 
 class Particle(eqx.Module):
-    x: Float[Array, "dim"]     
+    x: Float[Array, "dim"]   
+    x_0: Float[Array, "dim"]
     t: float
-    dt_logZt: Float[Array, "1"]
+    # dt_logZt: Float[Array, "1"]
 
 
 @eqx.filter_jit
@@ -59,6 +60,46 @@ def epsilon(
     return residual, jnp.mean(grad_phi ** 2, axis=1)
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
+
+@eqx.filter_jit
+def LHS_expectation_form(
+    v_theta: MLPVelocityField,
+    x: Float[Array, "dim"],
+    t: float,
+    test_fn: Callable[[Float[Array, "dim"], float], float],
+) -> Tuple[float, float]:
+    """Computes the local error using a Particle instance."""
+
+    dt_test_fn = jax.grad(lambda t: test_fn(x, t))(t)
+    dx_test_fn = jax.grad(lambda x: test_fn(x, t))(x)
+
+    v_x = v_theta(x, t)
+
+    grad_norm_xt = jnp.sqrt(jnp.sum(jnp.square(dx_test_fn)) + jnp.square(dt_test_fn))
+
+    return jnp.sum(v_x * dx_test_fn) + dt_test_fn, grad_norm_xt
+
+batched_LHS_expectation_form = jax.vmap(LHS_expectation_form, in_axes=(None, 0, 0, None))
+
+@eqx.filter_jit
+def RHS_expectation_form(
+    x_0: Float[Array, "batch_dim dim"],
+    test_fn: Callable[[Float[Array, "dim"], float], float],
+) -> Tuple[float, float]:
+    """Computes the RHS expectation form of the test function."""
+    batch_test_fn = jax.vmap(lambda x: test_fn(x, jnp.array([0.0])))(x_0)
+    return jnp.mean(batch_test_fn)
+    
+def loss_fn_expectation_form(
+    v_theta: MLPVelocityField,
+    particles: Particle,
+    test_fn: Callable[[Float[Array, "dim"], float], float],
+) -> Tuple[float, float]:
+    """Computes the loss using the expectation form of the test function."""
+
+    LHS, grad_norm_xt  = batched_LHS_expectation_form(v_theta, particles.x, particles.t, test_fn)
+    RHS = RHS_expectation_form(particles.x_0, test_fn)
+    return jnp.mean(LHS) + RHS, grad_norm_xt 
 
 def loss_fn(
     v_theta: MLPVelocityField,  
