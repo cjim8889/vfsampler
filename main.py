@@ -374,7 +374,7 @@ def main(
             vt = new_state.v_theta
 
             # Compute main loss and get phi values for regularization
-            main_loss, raw_epsilons, phi_values = loss_fn(
+            main_loss, _, phi_values = loss_fn(
                 v_theta=vt,
                 particles=particles,
                 time_derivative_log_density=ad.unnormalised_time_derivative,

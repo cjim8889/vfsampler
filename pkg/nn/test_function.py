@@ -31,8 +31,8 @@ class TrainableTestFunction(eqx.Module):
             dt=0.01,  # Not used since we don't use time
         )
     
-    def __call__(self, x: Float[Array, "dim"], t: float) -> Tuple[float, Float[Array, "dim"]]:
-        """Compute phi and grad_phi for given x and t.
+    def __call__(self, x: Float[Array, "dim"], t: float) -> Tuple[float]:
+        """Compute phi for given x and t.
         
         Args:
             x: Input coordinates
@@ -40,18 +40,11 @@ class TrainableTestFunction(eqx.Module):
             
         Returns:
             phi: Scalar test function value
-            grad_phi: Gradient of test function of shape (dim,)
         """
         # Compute phi value (scalar)
         phi = self.phi_network(x, t)[0]  # Extract scalar from shape (1,)
         
-        # Compute gradient with respect to x
-        def phi_fn(x_):
-            return self.phi_network(x_, t)[0]
-        
-        grad_phi = jax.grad(phi_fn)(x)
-        
-        return phi, grad_phi
+        return phi
 
 
 class FixedTestFunction(eqx.Module):
@@ -80,7 +73,7 @@ class FixedTestFunction(eqx.Module):
         self.log_prob_fn = log_prob_fn
         self.temperatures = temperatures
     
-    def __call__(self, x: Float[Array, "dim"], t: float) -> Tuple[Float[Array, "n_temps"], Float[Array, "n_temps dim"]]:
+    def __call__(self, x: Float[Array, "dim"], t: float) -> Tuple[Float[Array, "n_temps"]]:
         """Compute phi and grad_phi for given x and t using temperature-scaled log probability for each temperature.
         
         Args:
@@ -89,7 +82,6 @@ class FixedTestFunction(eqx.Module):
             
         Returns:
             phi: Array of test function values (log_prob(x, t) / temperature_i) of shape (n_temps,)
-            grad_phi: Array of gradients of test functions of shape (n_temps, dim)
         """
         # Compute base log probability once
         log_prob = self.log_prob_fn(x, t)
@@ -98,12 +90,4 @@ class FixedTestFunction(eqx.Module):
         temperatures_array = jnp.array(self.temperatures)
         phi_values = log_prob / temperatures_array
         
-        # Compute gradients for each temperature using vmap
-        def compute_grad_for_temp(temp):
-            def phi_fn(x_):
-                return self.log_prob_fn(x_, t) / temp
-            return jax.grad(phi_fn)(x)
-        
-        grad_phi_values = jax.vmap(compute_grad_for_temp)(temperatures_array)
-        
-        return phi_values, grad_phi_values
+        return phi_values

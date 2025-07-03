@@ -44,8 +44,8 @@ def epsilon(
     dt_log_density = dt_log_density_unormalised - dt_logZt
 
     # Use the provided test function instead of fixed fourier modes
-    phi, grad_phi = test_fn(x, t)
-    grad_phi = grad_phi.reshape(-1, x.shape[0])
+    phi = test_fn(x, t)
+    grad_phi = jax.grad(lambda x: test_fn(x, t))(x).reshape(-1, x.shape[0])
 
 
     first_term = phi * dt_log_density  # scalar
@@ -53,10 +53,7 @@ def epsilon(
     third_term = - jnp.dot(grad_phi, v)  # scalar
     residual = first_term + second_term + third_term
 
-    print(f"Shape of grad_phi: {grad_phi.shape}")
-    print(f"Shape of phi: {phi.shape}")
-
-    return residual, jnp.mean(grad_phi ** 2, axis=1)
+    return residual, jnp.mean(grad_phi ** 2, axis=1) + phi ** 2
 
 batched_epsilon = jax.vmap(epsilon, in_axes=(None, 0, None, None, None))
 
