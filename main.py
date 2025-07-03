@@ -511,7 +511,7 @@ def main(
     # Optimizer for test function (adversarial: maximize loss, minimize L2)
     # Only create if test function training is enabled
     if test_fn_training_enabled:
-        test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=0.0)  # No weight decay, we use custom L2
+        test_fn_optimizer = optax.adamw(test_fn_learning_rate, weight_decay=1e-4)  # No weight decay, we use custom L2
         test_fn_grad_clip = optax.clip_by_global_norm(1.0)
         test_fn_zero_nans = optax.zero_nans()
         test_fn_optimizer = optax.chain(test_fn_zero_nans, test_fn_grad_clip, test_fn_optimizer)
