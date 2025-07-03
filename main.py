@@ -53,6 +53,7 @@ def main(
     alternating_frequency: int = typer.Option(50, "--alternating-frequency", "-af", help="Number of steps to train one component before switching"),
     test_fn_learning_rate: float = typer.Option(1e-4, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
     test_fn_l2_reg: float = typer.Option(5.0, "--test-fn-l2", help="Sobolev regularization weight for test function"),
+    test_fn_depth: int = typer.Option(4, "--test-fn-depth", help="Depth for the test function"),
     train_test_fn: bool = typer.Option(True, "--train-test-fn", help="Whether to train the test function (if it has trainable parameters)"),
 ):
     """Train an augmented flow sampling model with configurable parameters."""
@@ -93,7 +94,7 @@ def main(
         key=test_fn_key,
         in_dim=dim,
         hidden_dim=hidden_dim,
-        depth=depth,
+        depth=test_fn_depth,
     )
 
     # Alternative: Use a fixed (non-trainable) test function
