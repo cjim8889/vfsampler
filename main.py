@@ -60,7 +60,7 @@ def main(
     key = jax.random.PRNGKey(random_seed)
     batch_size = batch_size_multiplier * time_steps
     ts = jnp.linspace(0, 1, time_steps)
-    dim = num_particles * 2
+    dim = 1 * 2
 
     initial_distribution = MultivariateGaussian(
         sigma=initial_sigma,
@@ -73,14 +73,14 @@ def main(
     #     space_dim=2,
     #     sigma=initial_sigma,
     # )
-    target_distribution = MultiDoubleWellEnergy(
-        dim=dim,
-        n_particles=num_particles,
-    )
-    # target_distribution = GMM(
-    #     key=key,
+    # target_distribution = MultiDoubleWellEnergy(
     #     dim=dim,
+    #     n_particles=num_particles,
     # )
+    target_distribution = GMM(
+        key=key,
+        dim=dim,
+    )
 
     annealed_distribution = AnnealedDistribution(
         initial_density=initial_distribution,
@@ -106,17 +106,24 @@ def main(
 
     key, subkey = jax.random.split(key)
 
-    v_theta = ParticleTransformerV4(
-        n_spatial_dim=2,
-        hidden_size=hidden_dim,
-        num_layers=depth,
-        num_heads=4,
+    # v_theta = ParticleTransformerV4(
+    #     n_spatial_dim=2,
+    #     hidden_size=hidden_dim,
+    #     num_layers=depth,
+    #     num_heads=4,
+    #     key=subkey,
+    #     mp_policy=jmp.Policy(
+    #         param_dtype=jnp.float32,
+    #         compute_dtype=jnp.float32,
+    #         output_dtype=jnp.float32,
+    #     )
+    # )
+    v_theta = MLPVelocityField(
         key=subkey,
-        mp_policy=jmp.Policy(
-            param_dtype=jnp.float32,
-            compute_dtype=jnp.float32,
-            output_dtype=jnp.float32,
-        )
+        in_dim=dim,
+        out_dim=dim,
+        hidden_dim=hidden_dim,
+        depth=depth,
     )
 
     # initial x
