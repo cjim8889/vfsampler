@@ -49,7 +49,7 @@ def main(
     noise_scale: float = typer.Option(1.0, "--noise-scale", help="Scale for random normal noise augmentation"),
     steps_per_epoch: int = typer.Option(250, "--steps-per-epoch", "-spe", help="Number of steps per epoch"),
     num_particles: int = typer.Option(4, "--num-particles", "-np", help="Number of particles in the target distribution"),
-    alternating_frequency: int = typer.Option(50, "--alternating-frequency", "-af", help="Number of steps to train one component before switching"),
+    alternating_frequency: int = typer.Option(5, "--alternating-frequency", "-af", help="Alternating pattern: >0 means k v_theta steps + 1 test_fn step, <0 means 1 v_theta step + |k| test_fn steps, 0 means only v_theta"),
     test_fn_learning_rate: float = typer.Option(1e-4, "--test-fn-lr", help="Learning rate for test function (adversarial)"),
     test_fn_l2_reg: float = typer.Option(5.0, "--test-fn-l2", help="Sobolev regularization weight for test function"),
     test_fn_depth: int = typer.Option(4, "--test-fn-depth", help="Depth for the test function"),
@@ -477,7 +477,12 @@ def main(
     print(f"  Random seed: {random_seed}")
     print(f"  Remove mean: {remove_mean}")
     print(f"  Number of particles: {num_particles}")
-    print(f"  Alternating frequency: {alternating_frequency}")
+    if alternating_frequency > 0:
+        print(f"  Alternating frequency: {alternating_frequency} (pattern: {alternating_frequency} v_theta + 1 test_fn per cycle)")
+    elif alternating_frequency < 0:
+        print(f"  Alternating frequency: {alternating_frequency} (pattern: 1 v_theta + {abs(alternating_frequency)} test_fn per cycle)")
+    else:
+        print(f"  Alternating frequency: {alternating_frequency} (only v_theta training)")
     print(f"  Test function LR: {test_fn_learning_rate}")
     print(f"  Test function Sobolev reg: {test_fn_l2_reg}")
     print(f"  Test function trainable: {test_fn_is_trainable}")
@@ -569,58 +574,34 @@ def main(
                 })
 
         # ---------------------------------------------
-        # NEW: iterate over multiple gradient steps per epoch
-        # Split into two phases: test_fn optimization then v_theta optimization
+        # Alternating training with proper frequency control:
+        # - alternating_frequency > 0: For every k steps of v_theta, 1 step of test_fn
+        # - alternating_frequency < 0: For every 1 step of v_theta, |k| steps of test_fn  
+        # - alternating_frequency = 0: Only v_theta training (no test function)
         # ---------------------------------------------
         epoch_losses = []  # store losses to compute an average per epoch
-        
-        # Phase 1: Train test function for C steps (alternating_frequency) - only if enabled
         test_fn_losses = []
-        if test_fn_training_enabled:
-            print(f"Epoch {epoch} - Phase 1: Training test function for {alternating_frequency} steps")
-            for test_step in range(alternating_frequency):
-                # Sample a batch from the full dataset for this training step
-                key, batch_key = jax.random.split(key)
-                batch_particles = sample_batch_from_data(
-                    batch_key, 
-                    full_dataset, 
-                    training_batch_size,
-                    enable_rotation,
-                    enable_translation,
-                    enable_noise,
-                    remove_mean,
-                    translation_scale,
-                    noise_scale,
-                )
-
-                # Train test function (adversarial: maximize loss + Sobolev reg)
-                train_state, test_fn_opt_state, adversarial_loss, main_loss, sobolev_penalty = training_step_test_fn(
-                    train_state, test_fn_opt_state, test_fn_optimizer, batch_particles, test_fn_l2_reg
-                )
-                
-                test_fn_losses.append(adversarial_loss)
-                epoch_losses.append(adversarial_loss)
-                
-                if test_step % 5 == 0:
-                    print(f"  Test_fn Step {test_step} | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | Sobolev Penalty: {sobolev_penalty:.6f}")
-                
-                # Log test_fn-specific metrics to wandb
-                wandb.log({
-                    "test_fn_adversarial_loss": adversarial_loss,
-                    "test_fn_main_loss": main_loss,
-                    "test_fn_sobolev_penalty": sobolev_penalty,
-                    "test_fn_step": test_step,
-                    "epoch": epoch,
-                    "training_phase": "test_fn",
-                })
-        else:
-            print(f"Epoch {epoch} - Phase 1: Skipping test function training (disabled)")
-
-        # Phase 2: Train v_theta for remaining steps (or all steps if test_fn disabled)
-        v_theta_steps = steps_per_epoch - (alternating_frequency if test_fn_training_enabled else 0)
         v_theta_losses = []
-        print(f"Epoch {epoch} - Phase 2: Training v_theta for {v_theta_steps} steps")
-        for v_step in range(v_theta_steps):
+        
+        # Track step counts for each training type for balanced logging
+        v_theta_step_count = 0
+        test_fn_step_count = 0
+        
+        # Determine training pattern based on alternating_frequency
+        if alternating_frequency > 0:
+            # Pattern: k steps of v_theta, then 1 step of test_fn
+            cycle_length = alternating_frequency + 1
+            print(f"Epoch {epoch} - Alternating: {alternating_frequency} v_theta steps + 1 test_fn step per cycle")
+        elif alternating_frequency < 0:
+            # Pattern: 1 step of v_theta, then |k| steps of test_fn
+            cycle_length = abs(alternating_frequency) + 1
+            print(f"Epoch {epoch} - Alternating: 1 v_theta step + {abs(alternating_frequency)} test_fn steps per cycle")
+        else:
+            # Only v_theta training
+            cycle_length = 1
+            print(f"Epoch {epoch} - Only v_theta training (alternating_frequency = 0)")
+        
+        for step in range(steps_per_epoch):
             # Sample a batch from the full dataset for this training step
             key, batch_key = jax.random.split(key)
             batch_particles = sample_batch_from_data(
@@ -634,25 +615,65 @@ def main(
                 translation_scale,
                 noise_scale,
             )
-
-            # Train velocity field (minimize loss)
-            train_state, v_theta_opt_state, v_theta_loss = training_step_v_theta(
-                train_state, v_theta_opt_state, v_theta_optimizer, batch_particles
-            )
             
-            v_theta_losses.append(v_theta_loss)
-            epoch_losses.append(v_theta_loss)
+            # Determine what to train based on alternating pattern
+            step_in_cycle = step % cycle_length
+            should_train_test_fn = False
             
-            if v_step % 10 == 0:
-                print(f"  V_theta Step {v_step} | Loss: {v_theta_loss:.6f}")
+            if alternating_frequency > 0 and test_fn_training_enabled:
+                # Train test_fn on the last step of each cycle
+                should_train_test_fn = (step_in_cycle == alternating_frequency)
+            elif alternating_frequency < 0 and test_fn_training_enabled:
+                # Train test_fn on all steps except the last one in each cycle
+                should_train_test_fn = (step_in_cycle < abs(alternating_frequency))
+            # If alternating_frequency == 0, should_train_test_fn remains False
             
-            # Log v_theta-specific metrics to wandb
-            wandb.log({
-                "v_theta_loss": v_theta_loss,
-                "v_theta_step": v_step,
-                "epoch": epoch,
-                "training_phase": "v_theta",
-            })
+            if should_train_test_fn:
+                # Train test function (adversarial: maximize loss + Sobolev reg)
+                train_state, test_fn_opt_state, adversarial_loss, main_loss, sobolev_penalty = training_step_test_fn(
+                    train_state, test_fn_opt_state, test_fn_optimizer, batch_particles, test_fn_l2_reg
+                )
+                
+                test_fn_losses.append(adversarial_loss)
+                epoch_losses.append(adversarial_loss)
+                test_fn_step_count += 1
+                
+                # Log every 10 test_fn steps to ensure balanced logging
+                if test_fn_step_count % 5 == 0:
+                    print(f"  Step {step} (Test_fn #{test_fn_step_count}) | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | Sobolev: {sobolev_penalty:.6f}")
+                
+                    # Log test_fn-specific metrics to wandb
+                    wandb.log({
+                        "test_fn_adversarial_loss": adversarial_loss,
+                        "test_fn_main_loss": main_loss,
+                        "test_fn_sobolev_penalty": sobolev_penalty,
+                        "step": step,
+                        "test_fn_step": test_fn_step_count,
+                        "epoch": epoch,
+                        "training_phase": "test_fn",
+                    })
+            else:
+                # Train velocity field (minimize loss)
+                train_state, v_theta_opt_state, v_theta_loss = training_step_v_theta(
+                    train_state, v_theta_opt_state, v_theta_optimizer, batch_particles
+                )
+                
+                v_theta_losses.append(v_theta_loss)
+                epoch_losses.append(v_theta_loss)
+                v_theta_step_count += 1
+                
+                # Log every 15 v_theta steps to ensure balanced logging
+                if v_theta_step_count % 5 == 0:
+                    print(f"  Step {step} (V_theta #{v_theta_step_count}) | Loss: {v_theta_loss:.6f}")
+                
+                    # Log v_theta-specific metrics to wandb
+                    wandb.log({
+                        "v_theta_loss": v_theta_loss,
+                        "step": step,
+                        "v_theta_step": v_theta_step_count,
+                        "epoch": epoch,
+                        "training_phase": "v_theta",
+                    })
 
         # Compute average loss over the epoch for logging/early-stopping etc.
         current_loss = jnp.mean(jnp.stack(epoch_losses))
@@ -662,12 +683,15 @@ def main(
         # Logging
         if epoch % log_interval == 0:
             elapsed_time = time.time() - start_time
-            if test_fn_training_enabled:
+            if test_fn_training_enabled and len(test_fn_losses) > 0:
                 print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | Test_fn: {avg_test_fn_loss:.6f} | V_theta: {avg_v_theta_loss:.6f} | Time: {elapsed_time:.1f}s")
-                print(f"          | Test_fn steps: {len(test_fn_losses)} | V_theta steps: {len(v_theta_losses)}")
+                print(f"          | Test_fn steps: {len(test_fn_losses)} | V_theta steps: {len(v_theta_losses)} | Alternating freq: {alternating_frequency}")
             else:
                 print(f"Epoch {epoch:4d} | Avg Loss: {current_loss:.6f} | V_theta: {avg_v_theta_loss:.6f} | Time: {elapsed_time:.1f}s")
-                print(f"          | V_theta steps: {len(v_theta_losses)} (Test_fn training disabled)")
+                if alternating_frequency == 0:
+                    print(f"          | V_theta steps: {len(v_theta_losses)} | Test_fn training disabled (freq=0)")
+                else:
+                    print(f"          | V_theta steps: {len(v_theta_losses)} | Test_fn training disabled (not trainable)")
             
             # Log epoch-level metrics to wandb
             wandb_metrics = {
@@ -678,10 +702,11 @@ def main(
                 "elapsed_time": elapsed_time,
                 "steps_per_epoch": steps_per_epoch,
                 "test_fn_training_enabled": test_fn_training_enabled,
+                "alternating_frequency": alternating_frequency,
             }
             
-            # Only log test function metrics if training is enabled
-            if test_fn_training_enabled:
+            # Only log test function metrics if training is enabled and steps were taken
+            if test_fn_training_enabled and len(test_fn_losses) > 0:
                 wandb_metrics.update({
                     "avg_test_fn_loss": avg_test_fn_loss,
                     "test_fn_steps": len(test_fn_losses),
