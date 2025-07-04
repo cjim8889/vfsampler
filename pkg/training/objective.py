@@ -11,6 +11,7 @@ from pkg.nn.mlp import MLPVelocityField
 class Particle(eqx.Module):
     x: Float[Array, "dim"]   
     x_0: Float[Array, "dim"]
+    x_1: Float[Array, "dim"]
     t: float
     # dt_logZt: Float[Array, "1"]
 

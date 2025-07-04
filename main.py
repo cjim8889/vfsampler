@@ -150,22 +150,22 @@ def main(
     #     time_derivative_log_density=annealed_distribution.unnormalised_time_derivative,
     # )
 
-    particles = Particle(
-        x=xs.reshape(-1, dim),
-        x_0=xs[0, :],
-        t=jnp.repeat(ts, xs.shape[1]),
-        # dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
-    )
+    # particles = Particle(
+    #     x=xs.reshape(-1, dim),
+    #     x_0=xs[0, :],
+    #     t=jnp.repeat(ts, xs.shape[1]),
+    #     # dt_logZt=jnp.repeat(dt_logZt, xs.shape[1]),
+    # )
 
-    loss, grad_norm_xt = loss_fn_expectation_form(
-        v_theta=v_theta,
-        particles=particles,
-        test_fn=test_fn,
-    )
+    # loss, grad_norm_xt = loss_fn_expectation_form(
+    #     v_theta=v_theta,
+    #     particles=particles,
+    #     test_fn=test_fn,
+    # )
 
     # Display initial diagnostics
-    print(grad_norm_xt)
-    print(f"Initial loss: {loss}")
+    # print(grad_norm_xt)
+    # print(f"Initial loss: {loss}")
 
     # ================== WANDB INITIALIZATION ==================
 
@@ -209,8 +209,8 @@ def main(
 
     # Log initial metrics
     wandb.log({
-        "initial_loss": loss,
-        "initial_grad_norm_xt": grad_norm_xt.mean(),
+        # "initial_loss": loss,
+        # "initial_grad_norm_xt": grad_norm_xt.mean(),
         "initial_ess_mean": ess.mean(),
         "initial_ess_min": ess.min(),
         "initial_ess_final": ess[-1],  # ESS at final time step
