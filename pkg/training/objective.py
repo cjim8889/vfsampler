@@ -12,6 +12,7 @@ class Particle(eqx.Module):
     x: Float[Array, "dim"]     
     t: float
     dt_logZt: Float[Array, "1"]
+    weight: float
 
 
 @eqx.filter_jit
@@ -90,5 +91,5 @@ def loss_fn(
         test_fn,
     )
 
-    _loss = jnp.mean(raw_epsilons**2)
+    _loss = jnp.mean(raw_epsilons**2 * particles.weight)
     return _loss, raw_epsilons, phi_values

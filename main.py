@@ -5,7 +5,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
-import jmp
 import matplotlib.pyplot as plt
 import optax
 import typer
@@ -269,11 +268,12 @@ def main(
         # Return all particles (flattened across time and trajectory dimensions)
         time_steps, num_particles, dim = xs.shape
         all_particles_flat = xs.reshape(-1, dim)  # (time_steps * num_particles, dim)
-        
+        loss_weights = jnp.concatenate([jnp.ones((time_steps - 1)* num_particles), jnp.ones(num_particles) * 2])
         particles = Particle(
             x=all_particles_flat,
             t=jnp.repeat(ts, num_particles),
             dt_logZt=jnp.repeat(dt_logZt, num_particles),
+            weight=loss_weights,
         )
         
         return particles
