@@ -642,16 +642,16 @@ def main(
                 if test_fn_step_count % 5 == 0:
                     print(f"  Step {step} (Test_fn #{test_fn_step_count}) | Adversarial Loss: {adversarial_loss:.6f} | Main Loss: {main_loss:.6f} | Sobolev: {sobolev_penalty:.6f}")
                 
-                    # Log test_fn-specific metrics to wandb
-                    wandb.log({
-                        "test_fn_adversarial_loss": adversarial_loss,
-                        "test_fn_main_loss": main_loss,
-                        "test_fn_sobolev_penalty": sobolev_penalty,
-                        "step": step,
-                        "test_fn_step": test_fn_step_count,
-                        "epoch": epoch,
-                        "training_phase": "test_fn",
-                    })
+                # Log test_fn-specific metrics to wandb
+                wandb.log({
+                    "test_fn_adversarial_loss": adversarial_loss,
+                    "test_fn_main_loss": main_loss,
+                    "test_fn_sobolev_penalty": sobolev_penalty,
+                    "step": step,
+                    "test_fn_step": test_fn_step_count,
+                    "epoch": epoch,
+                    "training_phase": "test_fn",
+                })
             else:
                 # Train velocity field (minimize loss)
                 train_state, v_theta_opt_state, v_theta_loss = training_step_v_theta(
@@ -666,14 +666,14 @@ def main(
                 if v_theta_step_count % 5 == 0:
                     print(f"  Step {step} (V_theta #{v_theta_step_count}) | Loss: {v_theta_loss:.6f}")
                 
-                    # Log v_theta-specific metrics to wandb
-                    wandb.log({
-                        "v_theta_loss": v_theta_loss,
-                        "step": step,
-                        "v_theta_step": v_theta_step_count,
-                        "epoch": epoch,
-                        "training_phase": "v_theta",
-                    })
+                # Log v_theta-specific metrics to wandb
+                wandb.log({
+                    "v_theta_loss": v_theta_loss,
+                    "step": step,
+                    "v_theta_step": v_theta_step_count,
+                    "epoch": epoch,
+                    "training_phase": "v_theta",
+                })
 
         # Compute average loss over the epoch for logging/early-stopping etc.
         current_loss = jnp.mean(jnp.stack(epoch_losses))
