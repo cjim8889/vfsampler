@@ -268,6 +268,7 @@ def main(
             x=all_particles_flat,
             t=jnp.repeat(ts, num_particles),
             x_0=xs[0, :],
+            x_1=xs[-1, :],
             # dt_logZt=jnp.repeat(dt_logZt, num_particles),
         )
         
@@ -325,6 +326,7 @@ def main(
             x=batch_x,
             t=batch_t,
             x_0=particles.x_0,
+            x_1=particles.x_1,
             # dt_logZt=batch_dt_logZt,
         )
         
