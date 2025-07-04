@@ -303,7 +303,7 @@ def main(
         batch_x = particles.x[batch_indices]
         batch_t = particles.t[batch_indices]
         batch_dt_logZt = particles.dt_logZt[batch_indices]
-        
+        batch_weight = particles.weight[batch_indices]
         # Apply data augmentation if any augmentation is enabled
         if enable_rotation or enable_translation or enable_noise:
             # Generate keys for each particle in the batch
@@ -331,6 +331,7 @@ def main(
             x=batch_x,
             t=batch_t,
             dt_logZt=batch_dt_logZt,
+            weight=batch_weight,
         )
         
         return batch_particles
